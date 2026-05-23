@@ -78,8 +78,16 @@ struct SystemAppLauncher {
         if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: canonical) {
             return url
         }
-        // Fall through to name-based lookup
-        return NSWorkspace.shared.fullPath(forApplication: canonical).map(URL.init(fileURLWithPath:))
+        if let path = NSWorkspace.shared.fullPath(forApplication: canonical) {
+            return URL(fileURLWithPath: path)
+        }
+        // Fuzzy fallback: scan installed apps for the closest match
+        // ("inso" → "Insomnia", "cursor" → "Cursor").
+        if let fuzzy = AppInventory.bestMatch(for: canonical),
+           let path = NSWorkspace.shared.fullPath(forApplication: fuzzy) {
+            return URL(fileURLWithPath: path)
+        }
+        return nil
     }
 
     /// Launch app by user-friendly name. By default opens a new window — for

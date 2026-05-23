@@ -12,6 +12,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupStatusBar()
         startIfPermitted()
+
+        NotificationCenter.default.addObserver(
+            forName: LearnedRulesStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.updateMenu() }
+
+        // Warm the installed-app inventory in the background so the first
+        // open_app call doesn't pay the directory-scan latency.
+        DispatchQueue.global(qos: .utility).async { _ = AppInventory.names() }
     }
 
     // MARK: - Status bar
@@ -50,6 +60,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        let rules = LearnedRulesStore.shared.rules
+        let learnedHeader = NSMenuItem(title: "学習済みルール: \(rules.count) 件", action: nil, keyEquivalent: "")
+        learnedHeader.isEnabled = false
+        menu.addItem(learnedHeader)
+
+        if !rules.isEmpty {
+            let submenu = NSMenu()
+            for rule in rules.suffix(15) {
+                let item = NSMenuItem(title: rule.text, action: nil, keyEquivalent: "")
+                item.isEnabled = false
+                submenu.addItem(item)
+            }
+            submenu.addItem(.separator())
+            let clear = NSMenuItem(title: "すべて削除...", action: #selector(clearLearnedRules), keyEquivalent: "")
+            clear.target = self
+            submenu.addItem(clear)
+
+            let learnedItem = NSMenuItem(title: "  ルール一覧 / クリア", action: nil, keyEquivalent: "")
+            learnedItem.submenu = submenu
+            menu.addItem(learnedItem)
+        }
+
+        menu.addItem(.separator())
+
         let restart = NSMenuItem(title: "アプリを再起動", action: #selector(restartApp), keyEquivalent: "r")
         restart.target = self
         menu.addItem(restart)
@@ -80,6 +114,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(url)
         }
         startPermissionPolling()
+    }
+
+    @objc private func clearLearnedRules() {
+        let alert = NSAlert()
+        alert.messageText = "学習済みルールをすべて削除しますか？"
+        alert.informativeText = "この操作は取り消せません。"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "削除")
+        alert.addButton(withTitle: "キャンセル")
+        if alert.runModal() == .alertFirstButtonReturn {
+            LearnedRulesStore.shared.clear()
+            updateMenu()
+        }
     }
 
     @objc private func restartApp() {

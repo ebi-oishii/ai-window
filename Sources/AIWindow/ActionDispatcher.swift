@@ -3,15 +3,28 @@ import Foundation
 struct ActionDispatcher {
     private let browser = BrowserExecutor()
     private let system = SystemSettingsExecutor()
+    private let files = FileExecutor()
 
     func dispatch(userInput: String, provider: ProviderType) async throws -> String {
         guard let apiKey = provider.apiKey else {
             throw AIError.missingAPIKey(provider.envKey)
         }
+        let result: String
         switch provider {
-        case .claude: return try await dispatchClaude(userInput: userInput, apiKey: apiKey)
-        case .gemini: return try await dispatchGemini(userInput: userInput, apiKey: apiKey)
+        case .claude: result = try await dispatchClaude(userInput: userInput, apiKey: apiKey)
+        case .gemini: result = try await dispatchGemini(userInput: userInput, apiKey: apiKey)
         }
+        // Reflection runs in the background so it never blocks the user. If it
+        // hits a rate limit or any other error it's silently dropped.
+        Task.detached(priority: .background) {
+            await Reflector.reflectAndStore(
+                userInput: userInput,
+                finalAnswer: result,
+                provider: provider,
+                apiKey: apiKey
+            )
+        }
+        return result
     }
 
     // MARK: - Claude agentic loop
@@ -144,6 +157,29 @@ struct ActionDispatcher {
             guard let action = input["action"]?.asString else { return "action が指定されていません" }
             let value = input["value"]?.asInt ?? 10
             return system.controlVolume(action: action, value: value)
+
+        case "list_recent_files":
+            guard let raw = input["location"]?.asString,
+                  let location = FileLocation.from(raw) else {
+                return "location が不正です（downloads / desktop / documents / home のいずれか）"
+            }
+            let limit = input["limit"]?.asInt ?? 5
+            let urls = files.listRecent(in: location, limit: limit)
+            return files.formatListing(urls, in: location)
+
+        case "open_file":
+            guard let path = input["path"]?.asString else { return "path が指定されていません" }
+            return files.openFile(path: path, withApp: input["app"]?.asString)
+
+        case "search_files":
+            guard let query = input["query"]?.asString, !query.isEmpty else {
+                return "query が指定されていません"
+            }
+            let nameOnly = input["name_only"]?.asBool ?? false
+            let location = input["location"]?.asString.flatMap(FileLocation.from)
+            let limit = input["limit"]?.asInt ?? 10
+            let urls = files.searchFiles(query: query, nameOnly: nameOnly, location: location, limit: limit)
+            return files.formatSearchResults(urls, query: query)
 
         default:
             return "未知のツール: \(tool)"
