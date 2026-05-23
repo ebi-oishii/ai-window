@@ -14,6 +14,8 @@ class InputPanelWindow: NSPanel {
     private let statusLabel = NSTextField()
     private let shortcutScrollView = NSScrollView()
     private let shortcutStack = NSStackView()
+    private let screenshotButton = NSButton()
+    private let helpButton = NSButton()
     private var shortcutButtons: [NSButton] = []
     private var toggledShortcutIDs: Set<String> = []
     private var dismissTimer: DispatchWorkItem?
@@ -77,7 +79,24 @@ class InputPanelWindow: NSPanel {
         sendButton.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(sendButton)
 
-        // Row 1.5 — shortcut chip bar (horizontal scroll)
+        // Row 1.5 — help button + screenshot toggle (fixed, left) + shortcut chip bar (scrollable)
+        helpButton.title = "/help"
+        helpButton.bezelStyle = .recessed
+        helpButton.font = .systemFont(ofSize: 11, weight: .medium)
+        helpButton.target = self
+        helpButton.action = #selector(didPressHelp)
+        helpButton.toolTip = "AI Window で何ができるかを AI に説明させる"
+        helpButton.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(helpButton)
+
+        screenshotButton.title = "📷 画面"
+        screenshotButton.setButtonType(.pushOnPushOff)
+        screenshotButton.bezelStyle = .recessed
+        screenshotButton.font = .systemFont(ofSize: 11, weight: .medium)
+        screenshotButton.toolTip = "オンにすると送信時に画面全体のスクリーンショットを AI に同送します"
+        screenshotButton.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(screenshotButton)
+
         shortcutStack.orientation = .horizontal
         shortcutStack.spacing = 6
         shortcutStack.alignment = .centerY
@@ -141,9 +160,17 @@ class InputPanelWindow: NSPanel {
             sendButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             sendButton.widthAnchor.constraint(equalToConstant: 64),
 
-            // Row 1.5 — chip bar
-            shortcutScrollView.topAnchor.constraint(equalTo: inputField.bottomAnchor, constant: 6),
-            shortcutScrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            // Row 1.5 — help + screenshot toggle (fixed left) + chip bar (scrollable, right)
+            helpButton.topAnchor.constraint(equalTo: inputField.bottomAnchor, constant: 6),
+            helpButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            helpButton.heightAnchor.constraint(equalToConstant: 22),
+
+            screenshotButton.centerYAnchor.constraint(equalTo: helpButton.centerYAnchor),
+            screenshotButton.leadingAnchor.constraint(equalTo: helpButton.trailingAnchor, constant: 6),
+            screenshotButton.heightAnchor.constraint(equalToConstant: 22),
+
+            shortcutScrollView.centerYAnchor.constraint(equalTo: helpButton.centerYAnchor),
+            shortcutScrollView.leadingAnchor.constraint(equalTo: screenshotButton.trailingAnchor, constant: 6),
             shortcutScrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             shortcutScrollView.heightAnchor.constraint(equalToConstant: 26),
 
@@ -152,7 +179,7 @@ class InputPanelWindow: NSPanel {
             shortcutStack.bottomAnchor.constraint(equalTo: shortcutScrollView.contentView.bottomAnchor),
 
             // Row 2 — fills available vertical space
-            resultScrollView.topAnchor.constraint(equalTo: shortcutScrollView.bottomAnchor, constant: 6),
+            resultScrollView.topAnchor.constraint(equalTo: helpButton.bottomAnchor, constant: 6),
             resultScrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             resultScrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
             resultScrollView.bottomAnchor.constraint(equalTo: providerControl.topAnchor, constant: -4),
@@ -284,11 +311,31 @@ class InputPanelWindow: NSPanel {
         inputField.stringValue = ""
         resultView.string = ""
         isProcessing = false
+        screenshotButton.state = .off
         updateProviderStatus()
         statusLabel.textColor = .secondaryLabelColor
     }
 
     // MARK: - Send
+
+    @objc private func didPressHelp() {
+        guard !isProcessing else { return }
+        // Have the AI introspect from the tools it's been handed this turn.
+        // Anchoring on "tools you have right now" keeps the answer accurate
+        // even as we add new tools later.
+        inputField.stringValue = """
+        あなたは AI Window という macOS バックグラウンドアシスタントです。
+        現在あなたに渡されているツール一覧と system prompt を踏まえ、初心者向けに
+        「AI Window で実際にできること」を日本語で説明してください。
+
+        要件:
+        - 5〜8 個の具体的な指示例を箇条書きで（例:「Gmail で田中さんからのメールを検索」）
+        - 学習機能・前面アプリ把握・スクリーンショット同送 などの隠れた機能にも軽く触れる
+        - ツール名そのもの（open_app, search_files など）は出さなくて良い。ユーザーは指示文だけ理解できればよい
+        - 最後に「右下のチップで /gmail などをトグルするとそれを前提に話せる」とだけ補足
+        """
+        didPressSend()
+    }
 
     @objc private func didPressSend() {
         guard !isProcessing else { return }
@@ -300,19 +347,30 @@ class InputPanelWindow: NSPanel {
         let expansion = ShortcutExpander.expand(input: text, toggledIDs: Array(toggledShortcutIDs))
         let knownShortcutsBefore = Set(ShortcutRegistry.shared.commands.map { $0.id.lowercased() })
 
+        // Snapshot the screen synchronously while it's still in front. If we
+        // wait until after the panel grabs focus we just capture ourselves.
+        let imageBase64: String? = (screenshotButton.state == .on)
+            ? ScreenCapture.captureMainDisplayBase64()
+            : nil
+
         dismissTimer?.cancel()
         isProcessing = true
         sendButton.isEnabled = false
         inputField.isEditable = false
         resultView.string = ""
+        let visualNote = imageBase64.map { _ in " 📷" } ?? ""
         statusLabel.stringValue = expansion.activeIDs.isEmpty
-            ? "考え中..."
-            : "考え中... (/\(expansion.activeIDs.joined(separator: " /")))"
+            ? "考え中...\(visualNote)"
+            : "考え中... (/\(expansion.activeIDs.joined(separator: " /")))\(visualNote)"
         statusLabel.textColor = .secondaryLabelColor
 
         Task { @MainActor in
             do {
-                let result = try await ActionDispatcher().dispatch(userInput: expansion.prompt, provider: provider)
+                let result = try await ActionDispatcher().dispatch(
+                    userInput: expansion.prompt,
+                    provider: provider,
+                    imageBase64: imageBase64
+                )
                 ShortcutRegistry.shared.recordUsage(ids: expansion.activeIDs)
                 let display = result.isEmpty ? "（応答なし）" : result
                 resultView.string = display

@@ -11,11 +11,18 @@ enum ProviderType: String, CaseIterable {
         }
     }
 
+    /// Keychain takes precedence so GUI launches (which don't inherit shell
+    /// env) still find the key. Env var remains a fallback for `make run`
+    /// during development.
     var apiKey: String? {
-        ProcessInfo.processInfo.environment[envKey]
+        if let k = KeychainStore.read(account: envKey), !k.isEmpty { return k }
+        return ProcessInfo.processInfo.environment[envKey]
     }
 
-    var isConfigured: Bool { apiKey != nil }
+    var isConfigured: Bool {
+        if let key = apiKey { return !key.isEmpty }
+        return false
+    }
 
     static let defaultsKey = "AIWindowSelectedProvider"
 }

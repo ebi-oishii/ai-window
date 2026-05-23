@@ -25,6 +25,15 @@ enum Tools {
       list_recent_files で見つからなかった場合は search_files で PC 全体を検索 → open_file。
       例: 「請求書のPDF開いて」→ search_files(query="請求書", limit=5) → 適切な 1 件を選んで open_file
     - 任意の絶対パス / ~ 始まりのパスを開く場合も open_file を使う。
+    - 「クリップボードの〜」「コピーした〜」と言われたら read_clipboard、「コピーしておいて」「クリップボードに〜」なら write_clipboard。
+    - 「最新の〜」「<トピック>を調べて」「ググって」と言われたら web_search で上位結果を取得 → 必要なら open_url で個別ページへ。
+    - Notes/リマインダー/Music/Finder の細かい操作・壁紙変更・メール下書き作成など、専用ツールがない macOS スクリプタブル操作は run_applescript で組み立てる。
+      例:「『買い物』というメモを作って」→ tell application "Notes" to make new note with properties {name:"買い物", body:""}
+
+    前面コンテキスト:
+    - ユーザー入力の冒頭に "[現在前面のアプリ: <X> — \"<title>\"]" が自動付与される場合があります。
+      これは「現在ユーザーが見ている画面のアプリ」のヒントなので、指示の対象が曖昧なときは
+      この前面アプリを優先解釈する。例:「ここに〇〇を入力して」と言われたら前面アプリへの入力。
 
     主なWebサービスのURL:
     - Gmail: https://mail.google.com
@@ -108,6 +117,45 @@ enum Tools {
                     "name_only": ["type": "boolean", "description": "trueならファイル名のみで検索。省略時はfalse（本文・メタデータも含む）"] as [String: Any],
                     "location": ["type": "string", "enum": ["downloads", "desktop", "documents", "home"], "description": "オプション。検索対象を特定フォルダ配下に限定"] as [String: Any],
                     "limit": ["type": "integer", "description": "返す件数。省略時は10"] as [String: Any],
+                ],
+                "required": ["query"],
+            ] as [String: Any],
+        ],
+        [
+            "name": "read_clipboard",
+            "description": "現在のクリップボードのテキスト内容を読み取ります。「クリップボードの〜を訳して」「コピーしたやつを〜」などで使用。",
+            "input_schema": ["type": "object", "properties": [:] as [String: Any]] as [String: Any],
+        ],
+        [
+            "name": "write_clipboard",
+            "description": "指定したテキストをクリップボードに書き込みます。「コピーしておいて」「クリップボードに〜を入れて」などで使用。",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "text": ["type": "string", "description": "コピーするテキスト"] as [String: Any],
+                ],
+                "required": ["text"],
+            ] as [String: Any],
+        ],
+        [
+            "name": "run_applescript",
+            "description": "任意の AppleScript を実行します。Notes/リマインダー/Finder/Music/壁紙/メール作成下書きなど、macOSのスクリプタブルアプリの操作は基本これで行います。他のツール（open_app/open_url/list_recent_files等）で目的が達成できる場合はそちらを優先。失敗時は stderr が返るので適切にハンドリングしてください。",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "script": ["type": "string", "description": "実行する AppleScript ソース。例: 'tell application \"Notes\" to make new note with properties {name:\"買い物\", body:\"卵\"}'"] as [String: Any],
+                ],
+                "required": ["script"],
+            ] as [String: Any],
+        ],
+        [
+            "name": "web_search",
+            "description": "DuckDuckGoでWebを検索し、上位N件のタイトル・URL・スニペットを返します。最新情報や調べ物に使用。検索結果のURLを開きたい場合は別途 open_url を呼ぶ。",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "query": ["type": "string", "description": "検索クエリ"] as [String: Any],
+                    "limit": ["type": "integer", "description": "返す件数。省略時は5"] as [String: Any],
                 ],
                 "required": ["query"],
             ] as [String: Any],
@@ -201,6 +249,45 @@ enum Tools {
                             "name_only": ["type": "boolean", "description": "trueならファイル名のみで検索。省略時はfalse"] as [String: Any],
                             "location": ["type": "string", "description": "オプション。downloads / desktop / documents / home に限定"] as [String: Any],
                             "limit": ["type": "integer", "description": "返す件数。省略時は10"] as [String: Any],
+                        ],
+                        "required": ["query"],
+                    ] as [String: Any],
+                ] as [String: Any],
+                [
+                    "name": "read_clipboard",
+                    "description": "現在のクリップボードのテキスト内容を読み取ります。",
+                    "parameters": ["type": "object", "properties": [:] as [String: Any]] as [String: Any],
+                ] as [String: Any],
+                [
+                    "name": "write_clipboard",
+                    "description": "指定したテキストをクリップボードに書き込みます。",
+                    "parameters": [
+                        "type": "object",
+                        "properties": [
+                            "text": ["type": "string", "description": "コピーするテキスト"] as [String: Any],
+                        ],
+                        "required": ["text"],
+                    ] as [String: Any],
+                ] as [String: Any],
+                [
+                    "name": "run_applescript",
+                    "description": "任意の AppleScript を実行します。Notes/リマインダー/Finder/Music/壁紙/メール下書きなどスクリプタブル操作はこれで。他ツールで達成できる場合はそちらを優先。",
+                    "parameters": [
+                        "type": "object",
+                        "properties": [
+                            "script": ["type": "string", "description": "AppleScript ソース"] as [String: Any],
+                        ],
+                        "required": ["script"],
+                    ] as [String: Any],
+                ] as [String: Any],
+                [
+                    "name": "web_search",
+                    "description": "DuckDuckGoでWebを検索し、上位N件のタイトル・URL・スニペットを返します。",
+                    "parameters": [
+                        "type": "object",
+                        "properties": [
+                            "query": ["type": "string", "description": "検索クエリ"] as [String: Any],
+                            "limit": ["type": "integer", "description": "返す件数。省略時は5"] as [String: Any],
                         ],
                         "required": ["query"],
                     ] as [String: Any],

@@ -10,6 +10,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        installMainMenu()
         setupStatusBar()
         startIfPermitted()
 
@@ -25,6 +26,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Status bar
+
+    /// LSUIElement apps don't show a menu bar, but AppKit still routes keyboard
+    /// shortcuts through NSApp.mainMenu. Without an Edit menu, Cmd+V/Cmd+C/
+    /// Cmd+A in any text field (including alert accessory views) are no-ops.
+    private func installMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        appItem.submenu = appMenu
+
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "取り消す",      action: Selector(("undo:")),       keyEquivalent: "z")
+        editMenu.addItem(withTitle: "やり直す",      action: Selector(("redo:")),       keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "カット",        action: #selector(NSText.cut(_:)),       keyEquivalent: "x")
+        editMenu.addItem(withTitle: "コピー",        action: #selector(NSText.copy(_:)),      keyEquivalent: "c")
+        editMenu.addItem(withTitle: "ペースト",      action: #selector(NSText.paste(_:)),     keyEquivalent: "v")
+        editMenu.addItem(withTitle: "すべてを選択",  action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+
+        NSApp.mainMenu = mainMenu
+    }
 
     private func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -56,6 +84,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let openSettings = NSMenuItem(title: "  システム設定を開く...", action: #selector(openAccessibilitySettings), keyEquivalent: "")
             openSettings.target = self
             menu.addItem(openSettings)
+        }
+
+        menu.addItem(.separator())
+
+        // API keys (Keychain-backed)
+        let keysHeader = NSMenuItem(title: "API キー", action: nil, keyEquivalent: "")
+        keysHeader.isEnabled = false
+        menu.addItem(keysHeader)
+        for provider in ProviderType.allCases {
+            let configured = provider.isConfigured
+            let title = "  \(configured ? "✓" : "✗") \(provider.rawValue) — \(configured ? "設定済み" : "未設定")"
+            let item = NSMenuItem(title: title, action: #selector(promptForAPIKey(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = provider.envKey
+            menu.addItem(item)
         }
 
         menu.addItem(.separator())
@@ -114,6 +157,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(url)
         }
         startPermissionPolling()
+    }
+
+    @objc private func promptForAPIKey(_ sender: NSMenuItem) {
+        guard let envKey = sender.representedObject as? String else { return }
+        let displayName = ProviderType.allCases.first(where: { $0.envKey == envKey })?.rawValue ?? envKey
+        let existing = KeychainStore.read(account: envKey) ?? ""
+
+        let alert = NSAlert()
+        alert.messageText = "\(displayName) API キーを設定"
+        alert.informativeText = "Keychain に保存します（\(envKey)）。"
+
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 22))
+        field.placeholderString = "sk-… / AIza… など"
+        field.stringValue = existing
+        alert.accessoryView = field
+
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "キャンセル")
+        if !existing.isEmpty {
+            alert.addButton(withTitle: "削除")
+        }
+
+        // Force the alert to the front since we're an accessory app.
+        NSApp.activate(ignoringOtherApps: true)
+        alert.layout()
+        alert.window.initialFirstResponder = field
+        let response = alert.runModal()
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch response {
+        case .alertFirstButtonReturn:
+            guard !value.isEmpty else { updateMenu(); return }
+            _ = KeychainStore.write(account: envKey, value: value)
+        case .alertThirdButtonReturn:
+            _ = KeychainStore.delete(account: envKey)
+        default:
+            break
+        }
+        updateMenu()
     }
 
     @objc private func clearLearnedRules() {
