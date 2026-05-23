@@ -258,6 +258,25 @@ enum Tools {
         ],
     ]
 
+    /// OpenAI / Ollama format: each tool wrapped as `{type:"function", function:{...}}`.
+    /// JSON Schema for parameters is identical to Claude's input_schema, so we
+    /// derive directly from `claudeDefinitions`.
+    static var openAIDefinitions: [[String: Any]] {
+        claudeDefinitions.compactMap { tool in
+            guard let name = tool["name"] as? String,
+                  let description = tool["description"] as? String,
+                  let schema = tool["input_schema"] as? [String: Any] else { return nil }
+            return [
+                "type": "function",
+                "function": [
+                    "name": name,
+                    "description": description,
+                    "parameters": schema,
+                ] as [String: Any],
+            ]
+        }
+    }
+
     // Gemini format: all functions inside one object under "function_declarations"
     static let geminiDefinitions: [[String: Any]] = [
         [

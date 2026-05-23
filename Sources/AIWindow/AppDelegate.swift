@@ -130,6 +130,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(item)
         }
 
+        // Model / host settings
+        let modelHeader = NSMenuItem(title: "モデル設定", action: nil, keyEquivalent: "")
+        modelHeader.isEnabled = false
+        menu.addItem(modelHeader)
+
+        let chatgptItem = NSMenuItem(
+            title: "  ChatGPT モデル — \(ProviderType.chatGPTModel)",
+            action: #selector(promptForChatGPTModel),
+            keyEquivalent: ""
+        )
+        chatgptItem.target = self
+        menu.addItem(chatgptItem)
+
+        let ollamaHostItem = NSMenuItem(
+            title: "  Ollama ホスト — \(ProviderType.ollamaHost)",
+            action: #selector(promptForOllamaHost),
+            keyEquivalent: ""
+        )
+        ollamaHostItem.target = self
+        menu.addItem(ollamaHostItem)
+
+        let ollamaModelItem = NSMenuItem(
+            title: "  Ollama モデル — \(ProviderType.ollamaModel)",
+            action: #selector(promptForOllamaModel),
+            keyEquivalent: ""
+        )
+        ollamaModelItem.target = self
+        menu.addItem(ollamaModelItem)
+
         menu.addItem(.separator())
 
         let rules = LearnedRulesStore.shared.rules
@@ -192,6 +221,60 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let raw = sender.representedObject as? String,
               let mode = UIMode(rawValue: raw) else { return }
         UIMode.current = mode
+    }
+
+    @objc private func promptForChatGPTModel() {
+        promptForStringSetting(
+            messageText: "ChatGPT モデルを設定",
+            informativeText: "例: gpt-4o-mini, gpt-4o, gpt-5",
+            current: ProviderType.chatGPTModel
+        ) { ProviderType.chatGPTModel = $0 }
+    }
+
+    @objc private func promptForOllamaHost() {
+        promptForStringSetting(
+            messageText: "Ollama ホストを設定",
+            informativeText: "デフォルト: http://localhost:11434",
+            current: ProviderType.ollamaHost
+        ) { ProviderType.ollamaHost = $0 }
+    }
+
+    @objc private func promptForOllamaModel() {
+        promptForStringSetting(
+            messageText: "Ollama モデルを設定",
+            informativeText: "例: llama3.2, qwen2.5:7b, mistral-nemo（事前に `ollama pull` が必要）",
+            current: ProviderType.ollamaModel
+        ) { ProviderType.ollamaModel = $0 }
+    }
+
+    /// Shared single-line text-input dialog used by all three settings above.
+    private func promptForStringSetting(
+        messageText: String,
+        informativeText: String,
+        current: String,
+        save: (String) -> Void
+    ) {
+        let alert = NSAlert()
+        alert.messageText = messageText
+        alert.informativeText = informativeText
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 22))
+        field.stringValue = current
+        alert.accessoryView = field
+
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "キャンセル")
+
+        NSApp.activate(ignoringOtherApps: true)
+        alert.layout()
+        alert.window.initialFirstResponder = field
+        let response = alert.runModal()
+
+        if response == .alertFirstButtonReturn {
+            let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { save(value) }
+        }
+        updateMenu()
     }
 
     @objc private func promptForAPIKey(_ sender: NSMenuItem) {

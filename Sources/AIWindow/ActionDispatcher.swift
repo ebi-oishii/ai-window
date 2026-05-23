@@ -36,8 +36,14 @@ struct ActionDispatcher {
         let box = SuggestionsBox()
         let text: String
         switch provider {
-        case .claude: text = try await dispatchClaude(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64, suggestions: box)
-        case .gemini: text = try await dispatchGemini(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64, suggestions: box)
+        case .claude:
+            text = try await dispatchClaude(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64, suggestions: box)
+        case .gemini:
+            text = try await dispatchGemini(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64, suggestions: box)
+        case .chatgpt:
+            text = try await dispatchOpenAI(client: .chatGPT(apiKey: apiKey), userInput: enriched, imageBase64: imageBase64, suggestions: box)
+        case .ollama:
+            text = try await dispatchOpenAI(client: .ollama(), userInput: enriched, imageBase64: imageBase64, suggestions: box)
         }
         // Reflection runs in the background so it never blocks the user. If it
         // hits a rate limit or any other error it's silently dropped.
@@ -173,6 +179,60 @@ struct ActionDispatcher {
         }
 
         return response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - OpenAI-compatible agentic loop (ChatGPT / Ollama)
+
+    private func dispatchOpenAI(client: OpenAIClient, userInput: String, imageBase64: String?, suggestions: SuggestionsBox) async throws -> String {
+        let firstUserContent: Any
+        if let img = imageBase64 {
+            firstUserContent = [
+                ["type": "text", "text": userInput] as [String: Any],
+                ["type": "image_url", "image_url": ["url": "data:image/png;base64,\(img)"] as [String: Any]] as [String: Any],
+            ]
+        } else {
+            firstUserContent = userInput
+        }
+
+        var messages: [[String: Any]] = [
+            ["role": "system", "content": Tools.systemPrompt],
+            ["role": "user",   "content": firstUserContent],
+        ]
+
+        var response = try await client.chat(messages: messages, tools: Tools.openAIDefinitions)
+
+        while let toolCalls = response.choices.first?.message.toolCalls, !toolCalls.isEmpty {
+            // Echo the assistant turn back so the next request sees the same tool_calls
+            var asstMsg: [String: Any] = ["role": "assistant"]
+            asstMsg["content"] = response.choices.first?.message.content ?? NSNull()
+            asstMsg["tool_calls"] = toolCalls.map { tc in
+                [
+                    "id": tc.id,
+                    "type": "function",
+                    "function": [
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    ] as [String: Any],
+                ] as [String: Any]
+            }
+            messages.append(asstMsg)
+
+            for tc in toolCalls {
+                let argsData = tc.function.arguments.data(using: .utf8) ?? Data()
+                let argsDict = (try? JSONDecoder().decode([String: JSONValue].self, from: argsData)) ?? [:]
+                let result = await execute(tool: tc.function.name, input: argsDict, suggestions: suggestions)
+                messages.append([
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
+                ])
+            }
+
+            response = try await client.chat(messages: messages, tools: Tools.openAIDefinitions)
+        }
+
+        return (response.choices.first?.message.content ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Shared tool execution

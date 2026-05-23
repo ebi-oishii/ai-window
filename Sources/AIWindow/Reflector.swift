@@ -71,6 +71,16 @@ enum Reflector {
                 tools: []
             )
             return resp.text
+        case .chatgpt, .ollama:
+            let client: OpenAIClient = provider == .chatgpt ? .chatGPT(apiKey: apiKey) : .ollama()
+            let resp = try await client.chat(
+                messages: [
+                    ["role": "system", "content": reflectionPrompt],
+                    ["role": "user",   "content": payload],
+                ],
+                tools: []
+            )
+            return resp.choices.first?.message.content ?? ""
         }
     }
 
