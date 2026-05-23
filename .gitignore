@@ -1,0 +1,16 @@
+# Swift build artifacts
+.build/
+*.xcodeproj/
+Package.resolved
+.swiftpm/
+
+# Built app bundle (regenerate via `make bundle`)
+AIWindow.app/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp

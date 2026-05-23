@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.aiwindow.app</string>
+    <key>CFBundleName</key>
+    <string>AIWindow</string>
+    <key>CFBundleDisplayName</key>
+    <string>AI Window</string>
+    <key>CFBundleExecutable</key>
+    <string>AIWindow</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>右クリックドラッグを監視してAI入力パネルを表示するために必要です。</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>音量などのシステム設定を変更するためにAppleScriptを実行します。</string>
+</dict>
+</plist>
