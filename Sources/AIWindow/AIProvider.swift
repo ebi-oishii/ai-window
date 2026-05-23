@@ -28,8 +28,10 @@ enum ProviderType: String, CaseIterable {
 }
 
 // Shared JSON value type for decoding tool call arguments from both providers
-enum JSONValue: Decodable {
+indirect enum JSONValue: Decodable {
     case string(String), int(Int), double(Double), bool(Bool), null
+    case array([JSONValue])
+    case object([String: JSONValue])
 
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
@@ -37,12 +39,16 @@ enum JSONValue: Decodable {
         if let v = try? c.decode(Int.self)    { self = .int(v);    return }
         if let v = try? c.decode(Double.self) { self = .double(v); return }
         if let v = try? c.decode(String.self) { self = .string(v); return }
+        if let v = try? c.decode([JSONValue].self) { self = .array(v); return }
+        if let v = try? c.decode([String: JSONValue].self) { self = .object(v); return }
         self = .null
     }
 
     var asString: String? { if case .string(let v) = self { return v }; return nil }
     var asInt: Int?       { if case .int(let v)    = self { return v }; return nil }
     var asBool: Bool?     { if case .bool(let v)   = self { return v }; return nil }
+    var asArray: [JSONValue]?         { if case .array(let v)  = self { return v }; return nil }
+    var asObject: [String: JSONValue]? { if case .object(let v) = self { return v }; return nil }
 }
 
 enum AIError: LocalizedError {

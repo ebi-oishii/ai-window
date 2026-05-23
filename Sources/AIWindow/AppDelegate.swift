@@ -5,6 +5,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var monitor: RightClickDragMonitor?
     private var overlayWindow: SelectionOverlayWindow?
     private var inputPanel: InputPanelWindow?
+    private var easyPanel: EasyPanelWindow?
     private var statusItem: NSStatusItem?
     private var permissionTimer: Timer?
 
@@ -19,6 +20,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in self?.updateMenu() }
+
+        NotificationCenter.default.addObserver(
+            forName: .uiModeDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.inputPanel?.dismiss()
+            self?.easyPanel?.dismiss()
+            self?.updateMenu()
+        }
 
         // Warm the installed-app inventory in the background so the first
         // open_app call doesn't pay the directory-scan latency.
@@ -84,6 +95,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let openSettings = NSMenuItem(title: "  システム設定を開く...", action: #selector(openAccessibilitySettings), keyEquivalent: "")
             openSettings.target = self
             menu.addItem(openSettings)
+        }
+
+        menu.addItem(.separator())
+
+        // UI mode toggle
+        let modeHeader = NSMenuItem(title: "モード", action: nil, keyEquivalent: "")
+        modeHeader.isEnabled = false
+        menu.addItem(modeHeader)
+        for mode in UIMode.allCases {
+            let isCurrent = UIMode.current == mode
+            let item = NSMenuItem(
+                title: "  \(isCurrent ? "●" : "○") \(mode.displayName)",
+                action: #selector(switchMode(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = mode.rawValue
+            menu.addItem(item)
         }
 
         menu.addItem(.separator())
@@ -157,6 +186,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(url)
         }
         startPermissionPolling()
+    }
+
+    @objc private func switchMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = UIMode(rawValue: raw) else { return }
+        UIMode.current = mode
     }
 
     @objc private func promptForAPIKey(_ sender: NSMenuItem) {
@@ -285,7 +320,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showInputPanel(near rect: CGRect) {
-        if inputPanel == nil { inputPanel = InputPanelWindow() }
-        inputPanel?.showNear(selectionRect: rect)
+        switch UIMode.current {
+        case .normal:
+            easyPanel?.dismiss()
+            if inputPanel == nil { inputPanel = InputPanelWindow() }
+            inputPanel?.showNear(selectionRect: rect)
+        case .easy:
+            inputPanel?.dismiss()
+            if easyPanel == nil { easyPanel = EasyPanelWindow() }
+            easyPanel?.showNear(selectionRect: rect)
+        }
     }
 }

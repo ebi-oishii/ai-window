@@ -1,9 +1,52 @@
 import Foundation
 
 enum Tools {
-    /// Composed at call time so newly-learned rules are picked up immediately.
+    /// Composed at call time so newly-learned rules and the user's current
+    /// UI mode are picked up immediately.
     static var systemPrompt: String {
-        basePrompt + LearnedRulesStore.shared.promptSection
+        basePrompt + modeSection + LearnedRulesStore.shared.promptSection
+    }
+
+    /// Mode-specific behavioral guidance appended to the base prompt.
+    private static var modeSection: String {
+        switch UIMode.current {
+        case .normal:
+            return ""
+        case .easy:
+            return """
+
+
+            ===== 簡単モード（重要）=====
+            現在のユーザーは PC 初心者です。以下を必ず守ってください:
+
+            1. 専門用語を避ける。
+               - NG: 「URL を構築」「ターミナル」「コマンド」「メタデータ」「シェル」「リダイレクト」「クエリ」
+               - OK: 「リンク」「ファイル」「ボタン」「アプリ」程度
+               - ツール名（open_url / search_files / run_applescript など）は応答に絶対に出さない。ユーザーには「やったこと」だけを伝える。
+
+            2. 指示が曖昧なときは絶対に推測実行せず、suggest_actions で 2〜4 個の選択肢を提示して聞き返す。
+               - ユーザー「メールしたい」→ suggest_actions(
+                   [{"label": "受信箱を開く", "prompt": "Gmail の受信箱を開いて"},
+                    {"label": "新しいメールを書く", "prompt": "Gmail で新規メール作成画面を開いて"},
+                    {"label": "特定の人を検索", "prompt": "Gmail で誰からのメールを探しますか？と聞いて"}]
+                 )
+               - ユーザー「資料探して」→ どこで何を、を聞き返す
+
+            3. 1 ステップで終わらない流れの途中も、毎回 suggest_actions で「次は？」候補を出す。
+               - 例: メール開いた直後 → "返信する" / "削除する" / "別のメールを見る"
+               - 例: ファイル検索結果出した → "1 番を開く" / "別のキーワードで再検索" / "もうやめる"
+
+            4. 取り返しのつかない操作（削除・送信・支払い・大きな設定変更）の前は必ず suggest_actions で確認を出す。
+               - "実行する" / "やめる" の 2 択ボタン。
+
+            5. 応答テキスト本体は短く優しい日本語で 1〜3 文。長い説明や箇条書きは避ける。読み上げても自然な口調で。
+               - 「Gmail を開いたよ」「音量を 50% にしたよ」のような完了報告を必ず 1 文添える。
+
+            6. 失敗した時は何が起きたか平易に説明し、suggest_actions で「もう一度試す」「別の方法」「やめる」の選択肢を出す。
+
+            7. ユーザーが「次は？」「これでいい？」のようにこちらに判断を委ねた時は、suggest_actions で具体的な行動候補を出す。テキストだけで「いかがでしょうか」と返すのは NG。
+            """
+        }
     }
 
     private static let basePrompt = """
@@ -149,6 +192,28 @@ enum Tools {
             ] as [String: Any],
         ],
         [
+            "name": "suggest_actions",
+            "description": "ユーザーに次の操作の選択肢を提示します。簡単モードのときに有効で、ユーザーが何をしたいか曖昧・迷っている可能性がある時、または1ステップで完結しない流れの途中で、2〜5個の次の操作候補をボタンとして提示する。各候補は label（ボタン表示文 12 文字程度）と prompt（ボタン押下時に AI に送る指示文）を持つ。テキスト応答と併用可。",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "actions": [
+                        "type": "array",
+                        "description": "2〜5個の選択肢配列",
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "label": ["type": "string", "description": "ボタン表示文（短く）"] as [String: Any],
+                                "prompt": ["type": "string", "description": "ボタン押下時に送られる指示文"] as [String: Any],
+                            ] as [String: Any],
+                            "required": ["label", "prompt"],
+                        ] as [String: Any],
+                    ] as [String: Any],
+                ] as [String: Any],
+                "required": ["actions"],
+            ] as [String: Any],
+        ],
+        [
             "name": "web_search",
             "description": "DuckDuckGoでWebを検索し、上位N件のタイトル・URL・スニペットを返します。最新情報や調べ物に使用。検索結果のURLを開きたい場合は別途 open_url を呼ぶ。",
             "input_schema": [
@@ -278,6 +343,28 @@ enum Tools {
                             "script": ["type": "string", "description": "AppleScript ソース"] as [String: Any],
                         ],
                         "required": ["script"],
+                    ] as [String: Any],
+                ] as [String: Any],
+                [
+                    "name": "suggest_actions",
+                    "description": "ユーザーに次の操作候補をボタンとして提示します。簡単モード時、ユーザーが迷っている / 流れの途中の選択場面で 2〜5 個提示。",
+                    "parameters": [
+                        "type": "object",
+                        "properties": [
+                            "actions": [
+                                "type": "array",
+                                "description": "2〜5個の選択肢配列",
+                                "items": [
+                                    "type": "object",
+                                    "properties": [
+                                        "label": ["type": "string", "description": "ボタン表示文（短く）"] as [String: Any],
+                                        "prompt": ["type": "string", "description": "押下時に送る指示文"] as [String: Any],
+                                    ] as [String: Any],
+                                    "required": ["label", "prompt"],
+                                ] as [String: Any],
+                            ] as [String: Any],
+                        ] as [String: Any],
+                        "required": ["actions"],
                     ] as [String: Any],
                 ] as [String: Any],
                 [

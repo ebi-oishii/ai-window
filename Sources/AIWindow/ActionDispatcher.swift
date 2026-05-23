@@ -1,5 +1,23 @@
 import Foundation
 
+/// Optional follow-up the AI offers — rendered as buttons in easy mode.
+struct SuggestedAction: Equatable {
+    let label: String
+    let prompt: String
+}
+
+/// Full result of one user turn: text response plus any AI-suggested buttons.
+struct DispatchResult {
+    let text: String
+    let suggestions: [SuggestedAction]
+}
+
+/// Reference-typed sink so the tool-use loop (running on a struct dispatcher)
+/// can accumulate AI-suggested buttons across turns.
+final class SuggestionsBox {
+    var actions: [SuggestedAction] = []
+}
+
 struct ActionDispatcher {
     private let browser = BrowserExecutor()
     private let system = SystemSettingsExecutor()
@@ -8,34 +26,35 @@ struct ActionDispatcher {
     private let appleScript = AppleScriptExecutor()
     private let webSearch = WebSearchExecutor()
 
-    func dispatch(userInput: String, provider: ProviderType, imageBase64: String? = nil) async throws -> String {
+    func dispatch(userInput: String, provider: ProviderType, imageBase64: String? = nil) async throws -> DispatchResult {
         guard let apiKey = provider.apiKey else {
             throw AIError.missingAPIKey(provider.envKey)
         }
         let contextLine = FrontmostContext.capture().promptLine
         let enriched = contextLine.map { "\($0)\n\nユーザー指示: \(userInput)" } ?? userInput
 
-        let result: String
+        let box = SuggestionsBox()
+        let text: String
         switch provider {
-        case .claude: result = try await dispatchClaude(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64)
-        case .gemini: result = try await dispatchGemini(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64)
+        case .claude: text = try await dispatchClaude(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64, suggestions: box)
+        case .gemini: text = try await dispatchGemini(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64, suggestions: box)
         }
         // Reflection runs in the background so it never blocks the user. If it
         // hits a rate limit or any other error it's silently dropped.
         Task.detached(priority: .background) {
             await Reflector.reflectAndStore(
                 userInput: userInput,
-                finalAnswer: result,
+                finalAnswer: text,
                 provider: provider,
                 apiKey: apiKey
             )
         }
-        return result
+        return DispatchResult(text: text, suggestions: box.actions)
     }
 
     // MARK: - Claude agentic loop
 
-    private func dispatchClaude(userInput: String, apiKey: String, imageBase64: String?) async throws -> String {
+    private func dispatchClaude(userInput: String, apiKey: String, imageBase64: String?, suggestions: SuggestionsBox) async throws -> String {
         let client = ClaudeClient(apiKey: apiKey)
 
         let firstContent: Any
@@ -83,7 +102,7 @@ struct ActionDispatcher {
             var toolResults: [[String: Any]] = []
             for block in response.content where block.type == "tool_use" {
                 guard let id = block.id, let name = block.name else { continue }
-                let result = await execute(tool: name, input: block.input ?? [:])
+                let result = await execute(tool: name, input: block.input ?? [:], suggestions: suggestions)
                 toolResults.append([
                     "type": "tool_result",
                     "tool_use_id": id,
@@ -107,7 +126,7 @@ struct ActionDispatcher {
 
     // MARK: - Gemini agentic loop
 
-    private func dispatchGemini(userInput: String, apiKey: String, imageBase64: String?) async throws -> String {
+    private func dispatchGemini(userInput: String, apiKey: String, imageBase64: String?, suggestions: SuggestionsBox) async throws -> String {
         let client = GeminiClient(apiKey: apiKey)
 
         var parts: [[String: Any]] = [["text": userInput]]
@@ -139,7 +158,7 @@ struct ActionDispatcher {
 
             var resultParts: [[String: Any]] = []
             for fc in response.functionCalls {
-                let result = await execute(tool: fc.name, input: fc.args ?? [:])
+                let result = await execute(tool: fc.name, input: fc.args ?? [:], suggestions: suggestions)
                 resultParts.append([
                     "functionResponse": ["name": fc.name, "response": ["result": result]]
                 ])
@@ -158,7 +177,7 @@ struct ActionDispatcher {
 
     // MARK: - Shared tool execution
 
-    private func execute(tool: String, input: [String: JSONValue]) async -> String {
+    private func execute(tool: String, input: [String: JSONValue], suggestions: SuggestionsBox) async -> String {
         switch tool {
         case "open_app":
             guard let name = input["name"]?.asString else { return "アプリ名が指定されていません" }
@@ -225,20 +244,41 @@ struct ActionDispatcher {
             let results = await webSearch.search(query: query, limit: limit)
             return webSearch.format(results, query: query)
 
+        case "suggest_actions":
+            guard let arr = input["actions"]?.asArray, !arr.isEmpty else {
+                return "actions が指定されていません"
+            }
+            var added = 0
+            for v in arr {
+                guard let obj = v.asObject,
+                      let label = obj["label"]?.asString,
+                      let prompt = obj["prompt"]?.asString,
+                      !label.isEmpty, !prompt.isEmpty else { continue }
+                suggestions.actions.append(SuggestedAction(label: label, prompt: prompt))
+                added += 1
+            }
+            return "\(added) 個の次の選択肢を提示しました"
+
         default:
             return "未知のツール: \(tool)"
         }
     }
 
     private func flatten(_ input: [String: JSONValue]) -> [String: Any] {
-        input.compactMapValues { value -> Any? in
-            switch value {
-            case .string(let v): return v
-            case .int(let v):    return v
-            case .double(let v): return v
-            case .bool(let v):   return v
-            case .null:          return nil
-            }
+        input.compactMapValues { Self.flattenValue($0) }
+    }
+
+    private static func flattenValue(_ value: JSONValue) -> Any? {
+        switch value {
+        case .string(let v): return v
+        case .int(let v):    return v
+        case .double(let v): return v
+        case .bool(let v):   return v
+        case .null:          return nil
+        case .array(let arr):
+            return arr.compactMap(flattenValue)
+        case .object(let obj):
+            return obj.compactMapValues(flattenValue)
         }
     }
 }

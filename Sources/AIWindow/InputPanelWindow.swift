@@ -16,13 +16,21 @@ class InputPanelWindow: NSPanel {
     private let shortcutStack = NSStackView()
     private let screenshotButton = NSButton()
     private let helpButton = NSButton()
+    private let closeButton = NSButton()
     private var shortcutButtons: [NSButton] = []
     private var toggledShortcutIDs: Set<String> = []
     private var dismissTimer: DispatchWorkItem?
+    private var idleTimer: DispatchWorkItem?
     private var isProcessing = false
+
+    /// Auto-dismiss the panel after this many seconds of no interaction.
+    private static let idleTimeout: TimeInterval = 90
+    /// Alpha applied to the panel when it loses key focus.
+    private static let unfocusedAlpha: CGFloat = 0.45
 
     static let minWidth: CGFloat  = 460
     static let minHeight: CGFloat = 160
+    private static let cornerRadius: CGFloat = 14
     private static let toggledKey = "AIWindow.ToggledShortcutIDs"
 
     private var selectedProvider: ProviderType {
@@ -44,6 +52,17 @@ class InputPanelWindow: NSPanel {
         becomesKeyOnlyIfNeeded = false
         minSize = NSSize(width: Self.minWidth, height: Self.minHeight)
 
+        // Detroit-style chrome: transparent window, no title, no traffic lights
+        appearance = NSAppearance(named: .darkAqua)
+        isOpaque = false
+        backgroundColor = .clear
+        titlebarAppearsTransparent = true
+        titleVisibility = .hidden
+        hasShadow = true
+        for buttonType: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            standardWindowButton(buttonType)?.isHidden = true
+        }
+
         setupUI()
         restoreProviderSelection()
         restoreToggledShortcuts()
@@ -56,6 +75,20 @@ class InputPanelWindow: NSPanel {
             name: ShortcutRegistry.didChangeNotification,
             object: nil
         )
+
+        // Fade when another window takes focus, restore on key-back.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowBecameKey),
+            name: NSWindow.didBecomeKeyNotification,
+            object: self
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowResignedKey),
+            name: NSWindow.didResignKeyNotification,
+            object: self
+        )
     }
 
     deinit {
@@ -63,37 +96,107 @@ class InputPanelWindow: NSPanel {
     }
 
     private func setupUI() {
-        let content = NSView()
+        let content = PanelBackgroundView()
         contentView = content
+        content.wantsLayer = true
+        content.layer?.cornerRadius = Self.cornerRadius
+        content.layer?.masksToBounds = true
+        content.layer?.borderWidth = 1
+        content.layer?.borderColor = Theme.accentDim.cgColor
+
+        // Blur layer (bottom of z-order)
+        let blur = NSVisualEffectView()
+        blur.material = .hudWindow
+        blur.blendingMode = .behindWindow
+        blur.state = .active
+        blur.wantsLayer = true
+        blur.layer?.cornerRadius = Self.cornerRadius
+        blur.layer?.masksToBounds = true
+        blur.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(blur, positioned: .below, relativeTo: nil)
+
+        // Accent tint over the blur
+        let tint = NSView()
+        tint.wantsLayer = true
+        tint.layer?.backgroundColor = Theme.backgroundOverlay.cgColor
+        tint.layer?.cornerRadius = Self.cornerRadius
+        tint.layer?.masksToBounds = true
+        tint.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(tint, positioned: .above, relativeTo: blur)
+
+        // Close button (top-right, inside the cyan accent strip)
+        closeButton.isBordered = false
+        closeButton.wantsLayer = true
+        closeButton.attributedTitle = NSAttributedString(
+            string: "✕",
+            attributes: [
+                .foregroundColor: Theme.accentDim,
+                .font: Theme.hud(13, weight: .medium),
+            ]
+        )
+        closeButton.target = self
+        closeButton.action = #selector(didPressClose)
+        closeButton.toolTip = "閉じる (Esc)"
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(closeButton)
 
         // Row 1 — input field + send button
-        inputField.placeholderString = "何をしたいですか？（例: Gmail を開く、音量を少し上げる）"
+        inputField.placeholderAttributedString = NSAttributedString(
+            string: "COMMAND ▸  例: Gmail を開く、音量を少し上げる",
+            attributes: [
+                .foregroundColor: Theme.foregroundDim,
+                .font: Theme.body(13, weight: .light),
+                .kern: 0.4,
+            ]
+        )
         inputField.delegate = self
+        inputField.isBordered = false
+        inputField.drawsBackground = false
+        inputField.focusRingType = .none
+        inputField.textColor = Theme.foreground
+        inputField.font = Theme.body(15, weight: .light)
         inputField.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(inputField)
 
-        sendButton.title = "実行"
-        sendButton.bezelStyle = .rounded
+        // Thin cyan underline beneath the input — focus indicator look
+        let inputUnderline = NSView()
+        inputUnderline.wantsLayer = true
+        inputUnderline.layer?.backgroundColor = Theme.accentDim.cgColor
+        inputUnderline.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(inputUnderline)
+
+        sendButton.attributedTitle = NSAttributedString(
+            string: "▸ EXECUTE",
+            attributes: [
+                .foregroundColor: Theme.accent,
+                .font: Theme.hud(11, weight: .semibold),
+                .kern: 1.8,
+            ]
+        )
+        sendButton.isBordered = false
+        sendButton.wantsLayer = true
+        sendButton.layer?.borderColor = Theme.accent.cgColor
+        sendButton.layer?.borderWidth = 1
+        sendButton.layer?.cornerRadius = 11
+        sendButton.layer?.backgroundColor = Theme.accentGlow.cgColor
         sendButton.target = self
         sendButton.action = #selector(didPressSend)
         sendButton.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(sendButton)
 
         // Row 1.5 — help button + screenshot toggle (fixed, left) + shortcut chip bar (scrollable)
-        helpButton.title = "/help"
-        helpButton.bezelStyle = .recessed
-        helpButton.font = .systemFont(ofSize: 11, weight: .medium)
+        Self.styleChip(helpButton, title: "/help", on: false)
         helpButton.target = self
         helpButton.action = #selector(didPressHelp)
         helpButton.toolTip = "AI Window で何ができるかを AI に説明させる"
         helpButton.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(helpButton)
 
-        screenshotButton.title = "📷 画面"
         screenshotButton.setButtonType(.pushOnPushOff)
-        screenshotButton.bezelStyle = .recessed
-        screenshotButton.font = .systemFont(ofSize: 11, weight: .medium)
+        Self.styleChip(screenshotButton, title: "📷 SCREEN", on: false)
         screenshotButton.toolTip = "オンにすると送信時に画面全体のスクリーンショットを AI に同送します"
+        screenshotButton.target = self
+        screenshotButton.action = #selector(screenshotToggled)
         screenshotButton.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(screenshotButton)
 
@@ -118,9 +221,14 @@ class InputPanelWindow: NSPanel {
         resultView.isEditable = false
         resultView.isSelectable = true
         resultView.drawsBackground = false
-        resultView.font = .systemFont(ofSize: 13)
-        resultView.textColor = .labelColor
-        resultView.textContainerInset = NSSize(width: 2, height: 4)
+        resultView.font = Theme.body(13, weight: .light)
+        resultView.textColor = Theme.foreground
+        resultView.insertionPointColor = Theme.accent
+        resultView.selectedTextAttributes = [
+            .backgroundColor: Theme.accent.withAlphaComponent(0.28),
+            .foregroundColor: Theme.foreground,
+        ]
+        resultView.textContainerInset = NSSize(width: 4, height: 6)
         resultView.isVerticallyResizable = true
         resultView.isHorizontallyResizable = false
         resultView.autoresizingMask = [.width]
@@ -135,30 +243,57 @@ class InputPanelWindow: NSPanel {
         content.addSubview(resultScrollView)
 
         // Row 3 — provider picker + status
-        providerControl.segmentStyle = .capsule
+        providerControl.segmentStyle = .smallSquare
         providerControl.target = self
         providerControl.action = #selector(providerChanged)
+        for i in 0..<providerControl.segmentCount {
+            providerControl.setWidth(72, forSegment: i)
+        }
         providerControl.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(providerControl)
 
         statusLabel.isEditable = false
         statusLabel.isBordered = false
         statusLabel.drawsBackground = false
-        statusLabel.textColor = .secondaryLabelColor
-        statusLabel.font = .systemFont(ofSize: 11)
+        statusLabel.textColor = Theme.accentDim
+        statusLabel.font = Theme.hud(10, weight: .medium)
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(statusLabel)
 
+        // --- Layout for the new background / tint / underline pieces ---
         NSLayoutConstraint.activate([
+            blur.topAnchor.constraint(equalTo: content.topAnchor),
+            blur.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            blur.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            blur.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+
+            tint.topAnchor.constraint(equalTo: blur.topAnchor),
+            tint.leadingAnchor.constraint(equalTo: blur.leadingAnchor),
+            tint.trailingAnchor.constraint(equalTo: blur.trailingAnchor),
+            tint.bottomAnchor.constraint(equalTo: blur.bottomAnchor),
+
+            inputUnderline.leadingAnchor.constraint(equalTo: inputField.leadingAnchor),
+            inputUnderline.trailingAnchor.constraint(equalTo: inputField.trailingAnchor),
+            inputUnderline.topAnchor.constraint(equalTo: inputField.bottomAnchor, constant: 2),
+            inputUnderline.heightAnchor.constraint(equalToConstant: 1),
+        ])
+
+        NSLayoutConstraint.activate([
+            // Close button — top-right, in the accent strip
+            closeButton.topAnchor.constraint(equalTo: content.topAnchor, constant: 4),
+            closeButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -8),
+            closeButton.widthAnchor.constraint(equalToConstant: 22),
+            closeButton.heightAnchor.constraint(equalToConstant: 18),
+
             // Row 1
-            inputField.topAnchor.constraint(equalTo: content.topAnchor, constant: 10),
+            inputField.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             inputField.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             inputField.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -8),
 
             sendButton.centerYAnchor.constraint(equalTo: inputField.centerYAnchor),
             sendButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            sendButton.widthAnchor.constraint(equalToConstant: 64),
+            sendButton.widthAnchor.constraint(equalToConstant: 92),
 
             // Row 1.5 — help + screenshot toggle (fixed left) + chip bar (scrollable, right)
             helpButton.topAnchor.constraint(equalTo: inputField.bottomAnchor, constant: 6),
@@ -211,9 +346,91 @@ class InputPanelWindow: NSPanel {
         inputField.isEditable = ok
         sendButton.isEnabled = ok
         if !isProcessing {
-            statusLabel.stringValue = ok ? "" : "⚠ \(selectedProvider.envKey) が未設定"
-            statusLabel.textColor = ok ? .secondaryLabelColor : .systemOrange
+            statusLabel.stringValue = ok ? "▸ READY" : "⚠ \(selectedProvider.envKey) NOT SET"
+            statusLabel.textColor = ok ? Theme.accentDim : Theme.danger
         }
+        refreshSendButton()
+    }
+
+    // MARK: - Close / focus / idle
+
+    @objc private func didPressClose() {
+        dismiss()
+    }
+
+    @objc private func windowBecameKey() {
+        cancelIdleTimer()
+        scheduleIdleTimer()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            self.animator().alphaValue = 1.0
+        }
+    }
+
+    @objc private func windowResignedKey() {
+        // Keep the idle timer running — losing focus shouldn't reset it.
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            self.animator().alphaValue = Self.unfocusedAlpha
+        }
+    }
+
+    /// Reschedule the auto-dismiss for `idleTimeout` from now.
+    /// Called whenever the user shows signs of life: typing, toggling, etc.
+    private func scheduleIdleTimer() {
+        cancelIdleTimer()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            // Don't yank a panel that's mid-flight or just finished
+            // (`dismissTimer` handles the short post-success countdown).
+            if self.isProcessing { return }
+            self.dismiss()
+        }
+        idleTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleTimeout, execute: item)
+    }
+
+    private func cancelIdleTimer() {
+        idleTimer?.cancel()
+        idleTimer = nil
+    }
+
+    // MARK: - Chip styling
+
+    /// Apply Detroit-inspired chip look. Used for shortcut chips, the help
+    /// trigger, and the screenshot toggle so they all share one visual rule.
+    static func styleChip(_ button: NSButton, title: String, on: Bool) {
+        button.isBordered = false
+        button.bezelStyle = .recessed
+        button.wantsLayer = true
+        button.layer?.cornerRadius = 10
+        button.layer?.borderWidth = 1
+        button.layer?.backgroundColor = (on ? Theme.accentGlow : .clear).cgColor
+        button.layer?.borderColor = (on ? Theme.accent : Theme.accentDim).cgColor
+        button.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: on ? Theme.accent : Theme.foregroundDim,
+            .font: Theme.hud(10.5, weight: .medium),
+            .kern: 0.5,
+        ])
+    }
+
+    @objc private func screenshotToggled() {
+        Self.styleChip(screenshotButton, title: "📷 SCREEN", on: screenshotButton.state == .on)
+        scheduleIdleTimer()
+    }
+
+    private func refreshSendButton() {
+        let enabled = sendButton.isEnabled
+        sendButton.attributedTitle = NSAttributedString(
+            string: "▸ EXECUTE",
+            attributes: [
+                .foregroundColor: enabled ? Theme.accent : Theme.accentDim,
+                .font: Theme.hud(11, weight: .semibold),
+                .kern: 1.8,
+            ]
+        )
+        sendButton.layer?.backgroundColor = (enabled ? Theme.accentGlow : .clear).cgColor
+        sendButton.layer?.borderColor = (enabled ? Theme.accent : Theme.accentDim).cgColor
     }
 
     // MARK: - Shortcut chips
@@ -245,10 +462,10 @@ class InputPanelWindow: NSPanel {
         for command in ShortcutRegistry.shared.ordered {
             let button = NSButton(title: "/\(command.id)", target: self, action: #selector(didToggleShortcut(_:)))
             button.setButtonType(.pushOnPushOff)
-            button.bezelStyle = .recessed
-            button.font = .systemFont(ofSize: 11, weight: .medium)
             button.identifier = NSUserInterfaceItemIdentifier(rawValue: command.id)
-            button.state = toggledShortcutIDs.contains(command.id.lowercased()) ? .on : .off
+            let on = toggledShortcutIDs.contains(command.id.lowercased())
+            button.state = on ? .on : .off
+            Self.styleChip(button, title: "/\(command.id)", on: on)
             button.toolTip = command.isBuiltIn
                 ? "オンで「/\(command.id)」を先頭に付けたのと等価 — \(command.title)"
                 : "学習されたショートカット — \(command.title)"
@@ -264,7 +481,9 @@ class InputPanelWindow: NSPanel {
         } else {
             toggledShortcutIDs.remove(id)
         }
+        Self.styleChip(sender, title: sender.title, on: sender.state == .on)
         persistToggledShortcuts()
+        scheduleIdleTimer()
     }
 
     // MARK: - Show / dismiss
@@ -296,10 +515,12 @@ class InputPanelWindow: NSPanel {
 
         // .nonactivatingPanel lets us become key without NSApp.activate(), which
         // would trigger kCGEventTapDisabledByUserInput and kill the CGEventTap.
+        alphaValue = 1.0
         orderFrontRegardless()
         makeKey()
         makeFirstResponder(inputField)
         inputField.selectText(nil)
+        scheduleIdleTimer()
     }
 
     override var canBecomeKey: Bool { true }
@@ -307,13 +528,16 @@ class InputPanelWindow: NSPanel {
     func dismiss() {
         dismissTimer?.cancel()
         dismissTimer = nil
+        cancelIdleTimer()
         orderOut(nil)
         inputField.stringValue = ""
         resultView.string = ""
+        resultView.textColor = Theme.foreground
         isProcessing = false
         screenshotButton.state = .off
+        screenshotToggled()
         updateProviderStatus()
-        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.textColor = Theme.accentDim
     }
 
     // MARK: - Send
@@ -358,11 +582,13 @@ class InputPanelWindow: NSPanel {
         sendButton.isEnabled = false
         inputField.isEditable = false
         resultView.string = ""
+        resultView.textColor = Theme.foreground
         let visualNote = imageBase64.map { _ in " 📷" } ?? ""
         statusLabel.stringValue = expansion.activeIDs.isEmpty
-            ? "考え中...\(visualNote)"
-            : "考え中... (/\(expansion.activeIDs.joined(separator: " /")))\(visualNote)"
-        statusLabel.textColor = .secondaryLabelColor
+            ? "▸ PROCESSING...\(visualNote)"
+            : "▸ PROCESSING... /\(expansion.activeIDs.joined(separator: " /"))\(visualNote)"
+        statusLabel.textColor = Theme.accent
+        refreshSendButton()
 
         Task { @MainActor in
             do {
@@ -372,18 +598,18 @@ class InputPanelWindow: NSPanel {
                     imageBase64: imageBase64
                 )
                 ShortcutRegistry.shared.recordUsage(ids: expansion.activeIDs)
-                let display = result.isEmpty ? "（応答なし）" : result
+                let display = result.text.isEmpty ? "（応答なし）" : result.text
                 resultView.string = display
                 resultView.scrollToBeginningOfDocument(nil)
 
                 let learnedNow = ShortcutRegistry.shared.commands
                     .filter { !knownShortcutsBefore.contains($0.id.lowercased()) }
                 if let learned = learnedNow.first {
-                    statusLabel.stringValue = "✓ 完了 — 🆕 /\(learned.id) を学習しました"
+                    statusLabel.stringValue = "✓ DONE — LEARNED /\(learned.id)"
                 } else {
-                    statusLabel.stringValue = "✓ 完了"
+                    statusLabel.stringValue = "✓ DONE"
                 }
-                statusLabel.textColor = .systemGreen
+                statusLabel.textColor = Theme.success
                 inputField.stringValue = ""
                 isProcessing = false
                 updateProviderStatus()
@@ -394,9 +620,9 @@ class InputPanelWindow: NSPanel {
 
             } catch {
                 resultView.string = error.localizedDescription
-                resultView.textColor = .systemRed
-                statusLabel.stringValue = "✗ エラー"
-                statusLabel.textColor = .systemRed
+                resultView.textColor = Theme.danger
+                statusLabel.stringValue = "✗ ERROR"
+                statusLabel.textColor = Theme.danger
                 isProcessing = false
                 updateProviderStatus()
             }
@@ -416,5 +642,32 @@ extension InputPanelWindow: NSTextFieldDelegate {
         default:
             return false
         }
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        scheduleIdleTimer()
+    }
+}
+
+/// Custom content view. Border + corner radius are handled by the layer so
+/// they follow the rounded shape automatically. We still hand-draw the top
+/// accent stripe — it gets clipped by `masksToBounds` to the rounded top.
+final class PanelBackgroundView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        // 2px accent stripe at the very top — clipped to the rounded corners
+        // by the parent layer's masksToBounds.
+        let accent = NSRect(x: 0, y: bounds.maxY - 2, width: bounds.width, height: 2)
+        Theme.accent.setFill()
+        accent.fill()
     }
 }
