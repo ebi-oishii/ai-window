@@ -69,6 +69,10 @@ enum Tools {
       例: 「請求書のPDF開いて」→ search_files(query="請求書", limit=5) → 適切な 1 件を選んで open_file
     - 任意の絶対パス / ~ 始まりのパスを開く場合も open_file を使う。
     - 「クリップボードの〜」「コピーした〜」と言われたら read_clipboard、「コピーしておいて」「クリップボードに〜」なら write_clipboard。
+    - 「Discord に <文面> を送って」「Slack に送信」「ここに入力して」のように、アプリの入力欄へ文字を入れる場合は paste_text を使う。
+      - Discord/Slack/Chat などへの送信は open_app(name=<対象>, new_window=false) → paste_text(app=<対象>, text=<文面>, press_return=true)。
+      - 「下書きして」「入力しておいて」だけなら press_return=false。
+      - 送信先のチャンネル/相手が曖昧なら、勝手に送らず確認する。
     - 「最新の〜」「<トピック>を調べて」「ググって」と言われたら web_search で上位結果を取得 → 必要なら open_url で個別ページへ。
     - Notes/リマインダー/Music/Finder の細かい操作・壁紙変更・メール下書き作成など、専用ツールがない macOS スクリプタブル操作は run_applescript で組み立てる。
       例:「『買い物』というメモを作って」→ tell application "Notes" to make new note with properties {name:"買い物", body:""}
@@ -189,6 +193,19 @@ enum Tools {
                     "script": ["type": "string", "description": "実行する AppleScript ソース。例: 'tell application \"Notes\" to make new note with properties {name:\"買い物\", body:\"卵\"}'"] as [String: Any],
                 ],
                 "required": ["script"],
+            ] as [String: Any],
+        ],
+        [
+            "name": "paste_text",
+            "description": "指定アプリまたは前面アプリの現在フォーカスされている入力欄へテキストを貼り付けます。日本語入力やDiscord/Slack等のメッセージ送信に使います。送信まで求められた場合だけ press_return=true にしてください。送信先が曖昧なときは確認してください。",
+            "input_schema": [
+                "type": "object",
+                "properties": [
+                    "text": ["type": "string", "description": "貼り付ける本文"] as [String: Any],
+                    "app": ["type": "string", "description": "オプション。対象アプリ名（例: Discord, Slack）。省略時は前面アプリ"] as [String: Any],
+                    "press_return": ["type": "boolean", "description": "貼り付け後にReturnを押して送信するか。省略時はfalse"] as [String: Any],
+                ],
+                "required": ["text"],
             ] as [String: Any],
         ],
         [
@@ -362,6 +379,19 @@ enum Tools {
                             "script": ["type": "string", "description": "AppleScript ソース"] as [String: Any],
                         ],
                         "required": ["script"],
+                    ] as [String: Any],
+                ] as [String: Any],
+                [
+                    "name": "paste_text",
+                    "description": "指定アプリまたは前面アプリの現在フォーカスされている入力欄へテキストを貼り付けます。Discord/Slack等への送信は press_return=true。",
+                    "parameters": [
+                        "type": "object",
+                        "properties": [
+                            "text": ["type": "string", "description": "貼り付ける本文"] as [String: Any],
+                            "app": ["type": "string", "description": "オプション。対象アプリ名（例: Discord, Slack）。省略時は前面アプリ"] as [String: Any],
+                            "press_return": ["type": "boolean", "description": "貼り付け後にReturnを押して送信するか。省略時はfalse"] as [String: Any],
+                        ],
+                        "required": ["text"],
                     ] as [String: Any],
                 ] as [String: Any],
                 [

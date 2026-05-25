@@ -25,6 +25,7 @@ struct ActionDispatcher {
     private let clipboard = ClipboardExecutor()
     private let appleScript = AppleScriptExecutor()
     private let webSearch = WebSearchExecutor()
+    private let keyboard = KeyboardExecutor()
 
     func dispatch(userInput: String, provider: ProviderType, imageBase64: String? = nil) async throws -> DispatchResult {
         guard let apiKey = provider.apiKey else {
@@ -289,6 +290,12 @@ struct ActionDispatcher {
             guard let text = input["text"]?.asString else { return "text が指定されていません" }
             clipboard.write(text)
             return "クリップボードにコピーしました (\(text.count) 文字)"
+
+        case "paste_text":
+            guard let text = input["text"]?.asString else { return "text が指定されていません" }
+            let appName = input["app"]?.asString
+            let pressReturn = input["press_return"]?.asBool ?? false
+            return keyboard.pasteText(text, appName: appName, pressReturn: pressReturn)
 
         case "run_applescript":
             guard let script = input["script"]?.asString, !script.isEmpty else {
