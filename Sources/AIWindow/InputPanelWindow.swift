@@ -571,11 +571,7 @@ class InputPanelWindow: NSPanel {
         let expansion = ShortcutExpander.expand(input: text, toggledIDs: Array(toggledShortcutIDs))
         let knownShortcutsBefore = Set(ShortcutRegistry.shared.commands.map { $0.id.lowercased() })
 
-        // Snapshot the screen synchronously while it's still in front. If we
-        // wait until after the panel grabs focus we just capture ourselves.
-        let imageBase64: String? = (screenshotButton.state == .on)
-            ? ScreenCapture.captureMainDisplayBase64()
-            : nil
+        let forceScreen = screenshotButton.state == .on
 
         dismissTimer?.cancel()
         isProcessing = true
@@ -583,7 +579,7 @@ class InputPanelWindow: NSPanel {
         inputField.isEditable = false
         resultView.string = ""
         resultView.textColor = Theme.foreground
-        let visualNote = imageBase64.map { _ in " 📷" } ?? ""
+        let visualNote = forceScreen ? " 📷" : " AUTO"
         statusLabel.stringValue = expansion.activeIDs.isEmpty
             ? "▸ PROCESSING...\(visualNote)"
             : "▸ PROCESSING... /\(expansion.activeIDs.joined(separator: " /"))\(visualNote)"
@@ -592,10 +588,13 @@ class InputPanelWindow: NSPanel {
 
         Task { @MainActor in
             do {
+                let forcedImageBase64 = forceScreen ? await self.captureScreenForAI() : nil
                 let result = try await ActionDispatcher().dispatch(
                     userInput: expansion.prompt,
                     provider: provider,
-                    imageBase64: imageBase64
+                    imageBase64: forcedImageBase64,
+                    autoScreen: !forceScreen,
+                    captureScreen: { [weak self] in await self?.captureScreenForAI() }
                 )
                 ShortcutRegistry.shared.recordUsage(ids: expansion.activeIDs)
                 let display = result.text.isEmpty ? "（応答なし）" : result.text
@@ -605,9 +604,11 @@ class InputPanelWindow: NSPanel {
                 let learnedNow = ShortcutRegistry.shared.commands
                     .filter { !knownShortcutsBefore.contains($0.id.lowercased()) }
                 if let learned = learnedNow.first {
-                    statusLabel.stringValue = "✓ DONE — LEARNED /\(learned.id)"
+                    statusLabel.stringValue = result.usedScreen
+                        ? "✓ DONE 📷 — LEARNED /\(learned.id)"
+                        : "✓ DONE — LEARNED /\(learned.id)"
                 } else {
-                    statusLabel.stringValue = "✓ DONE"
+                    statusLabel.stringValue = result.usedScreen ? "✓ DONE 📷" : "✓ DONE"
                 }
                 statusLabel.textColor = Theme.success
                 inputField.stringValue = ""
@@ -627,6 +628,19 @@ class InputPanelWindow: NSPanel {
                 updateProviderStatus()
             }
         }
+    }
+
+    /// Temporarily fade the panel out before capture so the AI sees the user's
+    /// workspace instead of AI Window's own controls.
+    private func captureScreenForAI() async -> String? {
+        let previousAlpha = alphaValue
+        alphaValue = 0.0
+        displayIfNeeded()
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        let image = ScreenCapture.captureMainDisplayBase64()
+        alphaValue = previousAlpha
+        displayIfNeeded()
+        return image
     }
 }
 

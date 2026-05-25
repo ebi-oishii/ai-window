@@ -414,7 +414,9 @@ final class EasyPanelWindow: NSPanel {
             do {
                 let result = try await ActionDispatcher().dispatch(
                     userInput: text,
-                    provider: provider
+                    provider: provider,
+                    autoScreen: true,
+                    captureScreen: { [weak self] in await self?.captureScreenForAI() }
                 )
                 resultView.string = result.text.isEmpty ? "（応答なし）" : result.text
                 resultView.scrollToBeginningOfDocument(nil)
@@ -425,7 +427,7 @@ final class EasyPanelWindow: NSPanel {
                     renderSuggestions(result.suggestions)
                 }
 
-                statusLabel.stringValue = "✓ 完了"
+                statusLabel.stringValue = result.usedScreen ? "✓ 完了（画面を見ました）" : "✓ 完了"
                 statusLabel.textColor = .systemGreen
                 inputField.stringValue = ""
                 isProcessing = false
@@ -440,6 +442,19 @@ final class EasyPanelWindow: NSPanel {
                 updateProviderStatus()
             }
         }
+    }
+
+    /// Temporarily fade the panel out before capture so the AI sees the user's
+    /// workspace instead of AI Window's own controls.
+    private func captureScreenForAI() async -> String? {
+        let previousAlpha = alphaValue
+        alphaValue = 0.0
+        displayIfNeeded()
+        try? await Task.sleep(nanoseconds: 120_000_000)
+        let image = ScreenCapture.captureMainDisplayBase64()
+        alphaValue = previousAlpha
+        displayIfNeeded()
+        return image
     }
 }
 

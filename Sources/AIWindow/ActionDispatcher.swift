@@ -10,6 +10,7 @@ struct SuggestedAction: Equatable {
 struct DispatchResult {
     let text: String
     let suggestions: [SuggestedAction]
+    let usedScreen: Bool
 }
 
 /// Reference-typed sink so the tool-use loop (running on a struct dispatcher)
@@ -27,24 +28,38 @@ struct ActionDispatcher {
     private let webSearch = WebSearchExecutor()
     private let keyboard = KeyboardExecutor()
 
-    func dispatch(userInput: String, provider: ProviderType, imageBase64: String? = nil) async throws -> DispatchResult {
+    func dispatch(
+        userInput: String,
+        provider: ProviderType,
+        imageBase64: String? = nil,
+        autoScreen: Bool = true,
+        captureScreen: (() async -> String?)? = nil
+    ) async throws -> DispatchResult {
         guard let apiKey = provider.apiKey else {
             throw AIError.missingAPIKey(provider.envKey)
         }
         let contextLine = FrontmostContext.capture().promptLine
         let enriched = contextLine.map { "\($0)\n\nユーザー指示: \(userInput)" } ?? userInput
 
+        var effectiveImageBase64 = imageBase64
+        if effectiveImageBase64 == nil && autoScreen {
+            let needsScreen = try await shouldAttachScreen(userInput: enriched, provider: provider, apiKey: apiKey)
+            if needsScreen {
+                effectiveImageBase64 = await captureScreen?() ?? ScreenCapture.captureMainDisplayBase64()
+            }
+        }
+
         let box = SuggestionsBox()
         let text: String
         switch provider {
         case .claude:
-            text = try await dispatchClaude(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64, suggestions: box)
+            text = try await dispatchClaude(userInput: enriched, apiKey: apiKey, imageBase64: effectiveImageBase64, suggestions: box)
         case .gemini:
-            text = try await dispatchGemini(userInput: enriched, apiKey: apiKey, imageBase64: imageBase64, suggestions: box)
+            text = try await dispatchGemini(userInput: enriched, apiKey: apiKey, imageBase64: effectiveImageBase64, suggestions: box)
         case .chatgpt:
-            text = try await dispatchOpenAI(client: .chatGPT(apiKey: apiKey), userInput: enriched, imageBase64: imageBase64, suggestions: box)
+            text = try await dispatchOpenAI(client: .chatGPT(apiKey: apiKey), userInput: enriched, imageBase64: effectiveImageBase64, suggestions: box)
         case .ollama:
-            text = try await dispatchOpenAI(client: .ollama(), userInput: enriched, imageBase64: imageBase64, suggestions: box)
+            text = try await dispatchOpenAI(client: .ollama(), userInput: enriched, imageBase64: effectiveImageBase64, suggestions: box)
         }
         // Reflection runs in the background so it never blocks the user. If it
         // hits a rate limit or any other error it's silently dropped.
@@ -56,7 +71,133 @@ struct ActionDispatcher {
                 apiKey: apiKey
             )
         }
-        return DispatchResult(text: text, suggestions: box.actions)
+        return DispatchResult(text: text, suggestions: box.actions, usedScreen: effectiveImageBase64 != nil)
+    }
+
+    // MARK: - Automatic screen decision
+
+    /// Text-only preflight. It asks the selected model whether the current
+    /// screen is necessary before spending a vision request.
+    private func shouldAttachScreen(userInput: String, provider: ProviderType, apiKey: String) async throws -> Bool {
+        switch localScreenDecision(for: userInput) {
+        case .needsScreen:
+            return true
+        case .noScreenNeeded:
+            return false
+        case .askModel:
+            break
+        }
+
+        let prompt = """
+        あなたは macOS アシスタントの画面取得判定器です。
+        次のユーザー指示を実行するために、現在の画面画像が必要か判断してください。
+
+        SCREEN にする条件:
+        - 「これ」「ここ」「この画面」「表示されている」「見えている」「スクショ」「エラーを説明」「画面の英語を翻訳」など、画面内容がないと判断できない
+        - 前面アプリの見た目、文章、UI、エラー、画像、選択範囲を読む必要がある
+
+        NO_SCREEN にする条件:
+        - アプリを開く、URLを開く、ファイル検索、音量操作、Web検索、クリップボード操作など、画面画像なしで実行できる
+        - 前面アプリ名やウィンドウタイトルだけで十分
+
+        出力は必ず 1 語だけ:
+        SCREEN
+        または
+        NO_SCREEN
+
+        ユーザー指示:
+        \(userInput)
+        """
+
+        let raw: String
+        switch provider {
+        case .claude:
+            let resp = try await ClaudeClient(apiKey: apiKey).send(
+                system: "Return only SCREEN or NO_SCREEN.",
+                messages: [["role": "user", "content": prompt]],
+                tools: []
+            )
+            raw = resp.content.compactMap(\.text).joined(separator: "\n")
+        case .gemini:
+            let resp = try await GeminiClient(apiKey: apiKey).generate(
+                systemInstruction: "Return only SCREEN or NO_SCREEN.",
+                contents: [["role": "user", "parts": [["text": prompt]]]],
+                tools: []
+            )
+            raw = resp.text
+        case .chatgpt:
+            let resp = try await OpenAIClient.chatGPT(apiKey: apiKey).chat(
+                messages: [
+                    ["role": "system", "content": "Return only SCREEN or NO_SCREEN."],
+                    ["role": "user", "content": prompt],
+                ],
+                tools: []
+            )
+            raw = resp.choices.first?.message.content ?? ""
+        case .ollama:
+            let resp = try await OpenAIClient.ollama().chat(
+                messages: [
+                    ["role": "system", "content": "Return only SCREEN or NO_SCREEN."],
+                    ["role": "user", "content": prompt],
+                ],
+                tools: []
+            )
+            raw = resp.choices.first?.message.content ?? ""
+        }
+
+        return parseScreenDecision(raw)
+    }
+
+    private enum ScreenDecision {
+        case needsScreen
+        case noScreenNeeded
+        case askModel
+    }
+
+    /// Cheap local filter so routine commands do not pay an extra LLM round.
+    /// This matters especially for Ollama, where a cold model load can exceed
+    /// URLSession's default timeout before the real task even starts.
+    private func localScreenDecision(for userInput: String) -> ScreenDecision {
+        let text = userInput.lowercased()
+
+        let visualHints = [
+            "画面", "スクショ", "スクリーンショット", "表示されて", "映って", "見えて",
+            "読んで", "読み取", "翻訳して", "エラー", "この画像", "この写真",
+            "what's on screen", "screenshot", "on screen", "this error", "translate this",
+        ]
+        if visualHints.contains(where: { text.contains($0) }) {
+            return .needsScreen
+        }
+
+        let ambiguousHints = ["これ", "この", "ここ", "それ", "そこ", "this", "that", "here"]
+        if ambiguousHints.contains(where: { text.contains($0) }) {
+            return .askModel
+        }
+
+        let routineHints = [
+            "discord", "slack", "送って", "送信", "入力して", "貼り付け", "コピー",
+            "開いて", "起動", "検索", "調べて", "音量", "ファイル", "gmail",
+            "calendar", "drive", "youtube", "url", "http",
+        ]
+        if routineHints.contains(where: { text.contains($0) }) {
+            return .noScreenNeeded
+        }
+
+        return .noScreenNeeded
+    }
+
+    private func parseScreenDecision(_ raw: String) -> Bool {
+        let normalized = raw
+            .uppercased()
+            .replacingOccurrences(of: "-", with: "_")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.hasPrefix("NO_SCREEN") || normalized.hasPrefix("NO SCREEN") || normalized == "NO" {
+            return false
+        }
+        if normalized.hasPrefix("SCREEN") {
+            return true
+        }
+        return normalized.contains("SCREEN")
     }
 
     // MARK: - Claude agentic loop
