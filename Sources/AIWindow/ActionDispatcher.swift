@@ -99,6 +99,79 @@ struct ActionDispatcher {
         return DispatchResult(text: text, suggestions: box.actions, usedScreen: effectiveImageBase64 != nil)
     }
 
+    func suggestInputCompletion(prefix: String, provider: ProviderType) async throws -> String {
+        guard let apiKey = provider.apiKey else {
+            throw AIError.missingAPIKey(provider.envKey)
+        }
+        let trimmed = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let contextLine = FrontmostContext.capture().promptLine
+        let context = contextLine.map { "\($0)\n\n" } ?? ""
+        let prompt = """
+        あなたは AI Window の入力補完です。
+        ユーザーが途中まで入力した macOS 操作用の自然言語指示を、実行しやすい 1 文に補完してください。
+
+        ルール:
+        - 出力は補完後の指示文 1 行だけ
+        - 説明、引用符、箇条書き、前置きは不要
+        - 入力済みの意図を勝手に大きく変えない
+        - 不足情報が大きい場合は、ユーザーが次に入力しやすい質問文にする
+        - `/gmail` などの先頭ショートカットがあれば維持する
+
+        \(context)途中入力:
+        \(trimmed)
+        """
+
+        let raw: String
+        switch provider {
+        case .claude:
+            let resp = try await ClaudeClient(apiKey: apiKey).send(
+                system: "Return only one completed Japanese instruction line.",
+                messages: [["role": "user", "content": prompt]],
+                tools: []
+            )
+            raw = resp.content.compactMap(\.text).joined(separator: "\n")
+        case .gemini:
+            let resp = try await GeminiClient(apiKey: apiKey).generate(
+                systemInstruction: "Return only one completed Japanese instruction line.",
+                contents: [["role": "user", "parts": [["text": prompt]]]],
+                tools: []
+            )
+            raw = resp.text
+        case .chatgpt:
+            let resp = try await OpenAIClient.chatGPT(apiKey: apiKey).chat(
+                messages: [
+                    ["role": "system", "content": "Return only one completed Japanese instruction line."],
+                    ["role": "user", "content": prompt],
+                ],
+                tools: []
+            )
+            raw = resp.choices.first?.message.content ?? ""
+        case .ollama:
+            let resp = try await OpenAIClient.ollama(needsVision: false).chat(
+                messages: [
+                    ["role": "system", "content": "Return only one completed Japanese instruction line."],
+                    ["role": "user", "content": prompt],
+                ],
+                tools: []
+            )
+            raw = resp.choices.first?.message.content ?? ""
+        }
+
+        return sanitizeCompletion(raw, fallback: trimmed)
+    }
+
+    private func sanitizeCompletion(_ raw: String, fallback: String) -> String {
+        let line = raw
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .first?
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'`")))
+            ?? ""
+        return line.isEmpty ? fallback : line
+    }
+
     // MARK: - Automatic screen decision
 
     /// Text-only preflight. It asks the selected model whether the current
@@ -320,11 +393,19 @@ struct ActionDispatcher {
             var modelParts: [[String: Any]] = []
             for part in response.firstCandidateParts {
                 if let text = part.text {
-                    modelParts.append(["text": text])
+                    var textPart: [String: Any] = ["text": text]
+                    if let signature = part.thoughtSignature {
+                        textPart["thoughtSignature"] = signature
+                    }
+                    modelParts.append(textPart)
                 } else if let fc = part.functionCall {
-                    modelParts.append([
+                    var functionPart: [String: Any] = [
                         "functionCall": ["name": fc.name, "args": flatten(fc.args ?? [:])]
-                    ])
+                    ]
+                    if let signature = part.thoughtSignature {
+                        functionPart["thoughtSignature"] = signature
+                    }
+                    modelParts.append(functionPart)
                 }
             }
             contents.append(["role": "model", "parts": modelParts])

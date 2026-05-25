@@ -24,6 +24,10 @@ final class EasyPanelWindow: NSPanel {
     private var dismissTimer: DispatchWorkItem?
     private var idleTimer: DispatchWorkItem?
     private var isProcessing = false
+    private var historyCursor: Int?
+    private var draftBeforeHistory = ""
+    private var isCompletingInput = false
+    private var suppressInputChange = false
 
     static let minWidth: CGFloat  = 520
     static let minHeight: CGFloat = 380
@@ -405,6 +409,9 @@ final class EasyPanelWindow: NSPanel {
         guard provider.isConfigured else { return }
         let text = inputField.stringValue.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
+        InputHistoryStore.record(text)
+        historyCursor = nil
+        draftBeforeHistory = ""
 
         dismissTimer?.cancel()
         isProcessing = true
@@ -462,6 +469,76 @@ final class EasyPanelWindow: NSPanel {
         displayIfNeeded()
         return image
     }
+
+    private func recallHistory(delta: Int, textView: NSTextView) {
+        let history = InputHistoryStore.entries
+        guard !history.isEmpty else { return }
+
+        if historyCursor == nil {
+            draftBeforeHistory = inputField.stringValue
+            historyCursor = history.count
+        }
+
+        let current = historyCursor ?? history.count
+        let next = max(0, min(history.count, current + delta))
+        historyCursor = next
+
+        let value = next == history.count ? draftBeforeHistory : history[next]
+        suppressInputChange = true
+        textView.string = value
+        textView.setSelectedRange(NSRange(location: (value as NSString).length, length: 0))
+        inputField.stringValue = value
+        suppressInputChange = false
+        scheduleIdleTimer()
+    }
+
+    private func completeInput(textView: NSTextView) {
+        guard !isProcessing, !isCompletingInput else { return }
+        let prefix = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty, selectedProvider.isConfigured else { return }
+
+        isCompletingInput = true
+        let previousStatus = statusLabel.stringValue
+        statusLabel.stringValue = "考え中..."
+        statusLabel.textColor = Self.fgDim
+
+        Task { @MainActor in
+            defer {
+                self.isCompletingInput = false
+                if !self.isProcessing {
+                    self.statusLabel.stringValue = previousStatus
+                    self.updateProviderStatus()
+                }
+            }
+
+            do {
+                let suggestion = try await ActionDispatcher().suggestInputCompletion(
+                    prefix: prefix,
+                    provider: self.selectedProvider
+                )
+                guard !suggestion.isEmpty else { return }
+                self.suppressInputChange = true
+                self.inputField.stringValue = suggestion
+                textView.string = suggestion
+
+                let nsSuggestion = suggestion as NSString
+                let nsPrefix = prefix as NSString
+                if suggestion.hasPrefix(prefix), nsSuggestion.length > nsPrefix.length {
+                    textView.setSelectedRange(NSRange(
+                        location: nsPrefix.length,
+                        length: nsSuggestion.length - nsPrefix.length
+                    ))
+                } else {
+                    textView.setSelectedRange(NSRange(location: nsSuggestion.length, length: 0))
+                }
+                self.suppressInputChange = false
+                self.scheduleIdleTimer()
+            } catch {
+                self.statusLabel.stringValue = "✗ 補完エラー"
+                self.statusLabel.textColor = .systemRed
+            }
+        }
+    }
 }
 
 extension EasyPanelWindow: NSTextFieldDelegate {
@@ -469,6 +546,15 @@ extension EasyPanelWindow: NSTextFieldDelegate {
         switch commandSelector {
         case #selector(insertNewline(_:)):
             didPressSend()
+            return true
+        case #selector(moveUp(_:)):
+            recallHistory(delta: -1, textView: textView)
+            return true
+        case #selector(moveDown(_:)):
+            recallHistory(delta: 1, textView: textView)
+            return true
+        case #selector(insertTab(_:)):
+            completeInput(textView: textView)
             return true
         case #selector(cancelOperation(_:)):
             dismiss()
@@ -479,6 +565,10 @@ extension EasyPanelWindow: NSTextFieldDelegate {
     }
 
     func controlTextDidChange(_ obj: Notification) {
+        if !suppressInputChange {
+            historyCursor = nil
+            draftBeforeHistory = ""
+        }
         scheduleIdleTimer()
     }
 }

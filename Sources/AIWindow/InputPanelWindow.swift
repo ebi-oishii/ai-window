@@ -22,6 +22,10 @@ class InputPanelWindow: NSPanel {
     private var dismissTimer: DispatchWorkItem?
     private var idleTimer: DispatchWorkItem?
     private var isProcessing = false
+    private var historyCursor: Int?
+    private var draftBeforeHistory = ""
+    private var isCompletingInput = false
+    private var suppressInputChange = false
 
     /// Auto-dismiss the panel after this many seconds of no interaction.
     private static let idleTimeout: TimeInterval = 90
@@ -573,6 +577,9 @@ class InputPanelWindow: NSPanel {
         guard provider.isConfigured else { return }
         let text = inputField.stringValue.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty else { return }
+        InputHistoryStore.record(text)
+        historyCursor = nil
+        draftBeforeHistory = ""
 
         let expansion = ShortcutExpander.expand(input: text, toggledIDs: Array(toggledShortcutIDs))
         let knownShortcutsBefore = Set(ShortcutRegistry.shared.commands.map { $0.id.lowercased() })
@@ -648,6 +655,76 @@ class InputPanelWindow: NSPanel {
         displayIfNeeded()
         return image
     }
+
+    private func recallHistory(delta: Int, textView: NSTextView) {
+        let history = InputHistoryStore.entries
+        guard !history.isEmpty else { return }
+
+        if historyCursor == nil {
+            draftBeforeHistory = inputField.stringValue
+            historyCursor = history.count
+        }
+
+        let current = historyCursor ?? history.count
+        let next = max(0, min(history.count, current + delta))
+        historyCursor = next
+
+        let value = next == history.count ? draftBeforeHistory : history[next]
+        suppressInputChange = true
+        textView.string = value
+        textView.setSelectedRange(NSRange(location: (value as NSString).length, length: 0))
+        inputField.stringValue = value
+        suppressInputChange = false
+        scheduleIdleTimer()
+    }
+
+    private func completeInput(textView: NSTextView) {
+        guard !isProcessing, !isCompletingInput else { return }
+        let prefix = inputField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty, selectedProvider.isConfigured else { return }
+
+        isCompletingInput = true
+        let previousStatus = statusLabel.stringValue
+        statusLabel.stringValue = "▸ COMPLETING..."
+        statusLabel.textColor = Theme.accent
+
+        Task { @MainActor in
+            defer {
+                self.isCompletingInput = false
+                if !self.isProcessing {
+                    self.statusLabel.stringValue = previousStatus
+                    self.updateProviderStatus()
+                }
+            }
+
+            do {
+                let suggestion = try await ActionDispatcher().suggestInputCompletion(
+                    prefix: prefix,
+                    provider: self.selectedProvider
+                )
+                guard !suggestion.isEmpty else { return }
+                self.suppressInputChange = true
+                self.inputField.stringValue = suggestion
+                textView.string = suggestion
+
+                let nsSuggestion = suggestion as NSString
+                let nsPrefix = prefix as NSString
+                if suggestion.hasPrefix(prefix), nsSuggestion.length > nsPrefix.length {
+                    textView.setSelectedRange(NSRange(
+                        location: nsPrefix.length,
+                        length: nsSuggestion.length - nsPrefix.length
+                    ))
+                } else {
+                    textView.setSelectedRange(NSRange(location: nsSuggestion.length, length: 0))
+                }
+                self.suppressInputChange = false
+                self.scheduleIdleTimer()
+            } catch {
+                self.statusLabel.stringValue = "✗ COMPLETE ERROR"
+                self.statusLabel.textColor = Theme.danger
+            }
+        }
+    }
 }
 
 extension InputPanelWindow: NSTextFieldDelegate {
@@ -655,6 +732,15 @@ extension InputPanelWindow: NSTextFieldDelegate {
         switch commandSelector {
         case #selector(insertNewline(_:)):
             didPressSend()
+            return true
+        case #selector(moveUp(_:)):
+            recallHistory(delta: -1, textView: textView)
+            return true
+        case #selector(moveDown(_:)):
+            recallHistory(delta: 1, textView: textView)
+            return true
+        case #selector(insertTab(_:)):
+            completeInput(textView: textView)
             return true
         case #selector(cancelOperation(_:)):
             dismiss()
@@ -665,6 +751,10 @@ extension InputPanelWindow: NSTextFieldDelegate {
     }
 
     func controlTextDidChange(_ obj: Notification) {
+        if !suppressInputChange {
+            historyCursor = nil
+            draftBeforeHistory = ""
+        }
         scheduleIdleTimer()
     }
 }
