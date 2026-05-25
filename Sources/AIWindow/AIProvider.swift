@@ -45,16 +45,41 @@ enum ProviderType: String, CaseIterable {
 
     // MARK: - Ollama settings
 
-    private static let ollamaHostKey  = "AIWindow.OllamaHost"
-    private static let ollamaModelKey = "AIWindow.OllamaModel"
+    private static let ollamaHostKey       = "AIWindow.OllamaHost"
+    private static let ollamaModelKey      = "AIWindow.OllamaModel"
+    private static let ollamaTextModelKey  = "AIWindow.OllamaTextModel"
+    private static let ollamaSplitModelKey = "AIWindow.OllamaSplitTextVision"
 
     static var ollamaHost: String {
         get { UserDefaults.standard.string(forKey: ollamaHostKey) ?? "http://localhost:11434" }
         set { UserDefaults.standard.set(newValue, forKey: ollamaHostKey) }
     }
+    /// Single Ollama model for both text and vision. Vision-capable model
+    /// recommended (default `qwen3-vl:8b`).
     static var ollamaModel: String {
-        get { UserDefaults.standard.string(forKey: ollamaModelKey) ?? "llama3.2" }
+        get { UserDefaults.standard.string(forKey: ollamaModelKey) ?? "qwen3-vl:8b" }
         set { UserDefaults.standard.set(newValue, forKey: ollamaModelKey) }
+    }
+
+    /// Text-only Ollama model used when split mode is enabled and no screenshot
+    /// is attached. A smaller non-vision model is usually faster and cheaper.
+    static var ollamaTextModel: String {
+        get { UserDefaults.standard.string(forKey: ollamaTextModelKey) ?? "qwen3:8b" }
+        set { UserDefaults.standard.set(newValue, forKey: ollamaTextModelKey) }
+    }
+
+    /// When enabled, plain text turns use `ollamaTextModel` while screenshot
+    /// turns keep using `ollamaModel`, which should be vision-capable.
+    static var ollamaSplitTextVision: Bool {
+        get { UserDefaults.standard.bool(forKey: ollamaSplitModelKey) }
+        set { UserDefaults.standard.set(newValue, forKey: ollamaSplitModelKey) }
+    }
+
+    static func ollamaModelToUse(needsVision: Bool) -> String {
+        if ollamaSplitTextVision && !needsVision {
+            return ollamaTextModel
+        }
+        return ollamaModel
     }
 
     // MARK: - ChatGPT settings

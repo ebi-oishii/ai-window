@@ -38,6 +38,33 @@ struct ActionDispatcher {
         guard let apiKey = provider.apiKey else {
             throw AIError.missingAPIKey(provider.envKey)
         }
+
+        await LearningQueue.shared.userRequestStarted()
+        do {
+            let result = try await dispatchWithModel(
+                userInput: userInput,
+                provider: provider,
+                apiKey: apiKey,
+                imageBase64: imageBase64,
+                autoScreen: autoScreen,
+                captureScreen: captureScreen
+            )
+            await LearningQueue.shared.userRequestFinished()
+            return result
+        } catch {
+            await LearningQueue.shared.userRequestFinished()
+            throw error
+        }
+    }
+
+    private func dispatchWithModel(
+        userInput: String,
+        provider: ProviderType,
+        apiKey: String,
+        imageBase64: String?,
+        autoScreen: Bool,
+        captureScreen: (() async -> String?)?
+    ) async throws -> DispatchResult {
         let contextLine = FrontmostContext.capture().promptLine
         let enriched = contextLine.map { "\($0)\n\nユーザー指示: \(userInput)" } ?? userInput
 
@@ -59,18 +86,16 @@ struct ActionDispatcher {
         case .chatgpt:
             text = try await dispatchOpenAI(client: .chatGPT(apiKey: apiKey), userInput: enriched, imageBase64: effectiveImageBase64, suggestions: box)
         case .ollama:
-            text = try await dispatchOpenAI(client: .ollama(), userInput: enriched, imageBase64: effectiveImageBase64, suggestions: box)
+            text = try await dispatchOpenAI(client: .ollama(needsVision: effectiveImageBase64 != nil), userInput: enriched, imageBase64: effectiveImageBase64, suggestions: box)
         }
         // Reflection runs in the background so it never blocks the user. If it
         // hits a rate limit or any other error it's silently dropped.
-        Task.detached(priority: .background) {
-            await Reflector.reflectAndStore(
-                userInput: userInput,
-                finalAnswer: text,
-                provider: provider,
-                apiKey: apiKey
-            )
-        }
+        await LearningQueue.shared.enqueue(
+            userInput: userInput,
+            finalAnswer: text,
+            provider: provider,
+            apiKey: apiKey
+        )
         return DispatchResult(text: text, suggestions: box.actions, usedScreen: effectiveImageBase64 != nil)
     }
 
@@ -135,7 +160,7 @@ struct ActionDispatcher {
             )
             raw = resp.choices.first?.message.content ?? ""
         case .ollama:
-            let resp = try await OpenAIClient.ollama().chat(
+            let resp = try await OpenAIClient.ollama(needsVision: false).chat(
                 messages: [
                     ["role": "system", "content": "Return only SCREEN or NO_SCREEN."],
                     ["role": "user", "content": prompt],

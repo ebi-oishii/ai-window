@@ -34,6 +34,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Warm the installed-app inventory in the background so the first
         // open_app call doesn't pay the directory-scan latency.
         DispatchQueue.global(qos: .utility).async { _ = AppInventory.names() }
+
+        let savedProvider = UserDefaults.standard.integer(forKey: ProviderType.defaultsKey)
+        if savedProvider < ProviderType.allCases.count,
+           ProviderType.allCases[savedProvider] == .ollama {
+            OllamaWarmup.warmTextModelIfNeeded()
+        }
     }
 
     // MARK: - Status bar
@@ -199,6 +205,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ollamaModelItem.target = self
         menu.addItem(ollamaModelItem)
 
+        let split = ProviderType.ollamaSplitTextVision
+        let splitToggle = NSMenuItem(
+            title: "  \(split ? "☑︎" : "☐") テキスト/ビジョンでモデルを使い分ける",
+            action: #selector(toggleOllamaSplit),
+            keyEquivalent: ""
+        )
+        splitToggle.target = self
+        menu.addItem(splitToggle)
+
+        if split {
+            let textModelItem = NSMenuItem(
+                title: "    └ テキスト専用モデル — \(ProviderType.ollamaTextModel)",
+                action: #selector(promptForOllamaTextModel),
+                keyEquivalent: ""
+            )
+            textModelItem.target = self
+            menu.addItem(textModelItem)
+        }
+
         menu.addItem(.separator())
 
         let rules = LearnedRulesStore.shared.rules
@@ -296,9 +321,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func promptForOllamaModel() {
         promptForStringSetting(
             messageText: "Ollama モデルを設定",
-            informativeText: "例: llama3.2, qwen2.5:7b, mistral-nemo（事前に `ollama pull` が必要）",
+            informativeText: "使い分け OFF なら全用途、ON ならビジョン用（例: qwen3-vl:8b, qwen2.5-vl:7b）",
             current: ProviderType.ollamaModel
         ) { ProviderType.ollamaModel = $0 }
+    }
+
+    @objc private func promptForOllamaTextModel() {
+        promptForStringSetting(
+            messageText: "Ollama テキスト専用モデルを設定",
+            informativeText: "使い分け ON のとき、画面同送なしの指示に使うモデル（例: qwen3:8b, qwen2.5:7b）",
+            current: ProviderType.ollamaTextModel
+        ) { ProviderType.ollamaTextModel = $0 }
+    }
+
+    @objc private func toggleOllamaSplit() {
+        ProviderType.ollamaSplitTextVision.toggle()
+        updateMenu()
     }
 
     /// Shared single-line text-input dialog used by all three settings above.

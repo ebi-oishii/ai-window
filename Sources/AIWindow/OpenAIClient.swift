@@ -6,22 +6,31 @@ struct OpenAIClient {
     let apiKey: String?
     let baseURL: URL
     let model: String
+    let requestTimeout: TimeInterval
+    let isOllama: Bool
+    let maxTokens: Int
 
     static func chatGPT(apiKey: String) -> OpenAIClient {
         OpenAIClient(
             apiKey: apiKey,
             baseURL: URL(string: "https://api.openai.com/v1")!,
-            model: ProviderType.chatGPTModel
+            model: ProviderType.chatGPTModel,
+            requestTimeout: 90,
+            isOllama: false,
+            maxTokens: 1024
         )
     }
 
-    static func ollama() -> OpenAIClient {
+    static func ollama(needsVision: Bool) -> OpenAIClient {
         let host = ProviderType.ollamaHost.trimmingCharacters(in: .whitespaces)
         let cleaned = host.hasSuffix("/") ? String(host.dropLast()) : host
         return OpenAIClient(
             apiKey: nil,
             baseURL: URL(string: "\(cleaned)/v1")!,
-            model: ProviderType.ollamaModel
+            model: ProviderType.ollamaModelToUse(needsVision: needsVision),
+            requestTimeout: needsVision ? 240 : 180,
+            isOllama: true,
+            maxTokens: needsVision ? 768 : 512
         )
     }
 
@@ -66,6 +75,7 @@ struct OpenAIClient {
     func chat(messages: [[String: Any]], tools: [[String: Any]]) async throws -> Response {
         let endpoint = baseURL.appendingPathComponent("chat/completions")
         var req = URLRequest(url: endpoint)
+        req.timeoutInterval = requestTimeout
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         if let apiKey, !apiKey.isEmpty {
@@ -74,7 +84,15 @@ struct OpenAIClient {
         var body: [String: Any] = [
             "model": model,
             "messages": messages,
+            "max_tokens": maxTokens,
+            "temperature": 0.1,
+            "top_p": 0.9,
         ]
+        if isOllama {
+            // Avoid slow hidden thinking on reasoning-capable local models for
+            // short command-routing tasks.
+            body["reasoning_effort"] = "none"
+        }
         if !tools.isEmpty {
             body["tools"] = tools
         }

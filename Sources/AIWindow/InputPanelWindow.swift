@@ -338,6 +338,9 @@ class InputPanelWindow: NSPanel {
 
     @objc private func providerChanged() {
         UserDefaults.standard.set(providerControl.selectedSegment, forKey: ProviderType.defaultsKey)
+        if selectedProvider == .ollama {
+            OllamaWarmup.warmTextModelIfNeeded()
+        }
         if !isProcessing { updateProviderStatus() }
     }
 
@@ -520,6 +523,9 @@ class InputPanelWindow: NSPanel {
         makeKey()
         makeFirstResponder(inputField)
         inputField.selectText(nil)
+        if selectedProvider == .ollama {
+            OllamaWarmup.keepTextModelWarm()
+        }
         scheduleIdleTimer()
     }
 

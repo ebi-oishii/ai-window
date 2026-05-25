@@ -72,7 +72,8 @@ enum Reflector {
             )
             return resp.text
         case .chatgpt, .ollama:
-            let client: OpenAIClient = provider == .chatgpt ? .chatGPT(apiKey: apiKey) : .ollama()
+            // Reflection is text-only — never needs the vision model.
+            let client: OpenAIClient = provider == .chatgpt ? .chatGPT(apiKey: apiKey) : .ollama(needsVision: false)
             let resp = try await client.chat(
                 messages: [
                     ["role": "system", "content": reflectionPrompt],
