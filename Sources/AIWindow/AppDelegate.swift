@@ -143,6 +143,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         chatgptItem.target = self
         menu.addItem(chatgptItem)
 
+        // Gemini model: preset submenu with checkmarks + custom-input fallback.
+        let geminiItem = NSMenuItem(
+            title: "  Gemini モデル — \(ProviderType.geminiModel)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        let geminiSubmenu = NSMenu()
+        let current = ProviderType.geminiModel
+        for preset in ProviderType.geminiModelPresets {
+            let isCurrent = preset == current
+            let item = NSMenuItem(
+                title: "\(isCurrent ? "● " : "○ ")\(preset)",
+                action: #selector(selectGeminiModel(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = preset
+            geminiSubmenu.addItem(item)
+        }
+        // If the current model isn't in the preset list, show it explicitly.
+        if !ProviderType.geminiModelPresets.contains(current) {
+            let custom = NSMenuItem(
+                title: "● \(current)（カスタム）",
+                action: nil,
+                keyEquivalent: ""
+            )
+            custom.isEnabled = false
+            geminiSubmenu.addItem(custom)
+        }
+        geminiSubmenu.addItem(.separator())
+        let customGemini = NSMenuItem(
+            title: "その他...",
+            action: #selector(promptForGeminiModel),
+            keyEquivalent: ""
+        )
+        customGemini.target = self
+        geminiSubmenu.addItem(customGemini)
+        geminiItem.submenu = geminiSubmenu
+        menu.addItem(geminiItem)
+
         let ollamaHostItem = NSMenuItem(
             title: "  Ollama ホスト — \(ProviderType.ollamaHost)",
             action: #selector(promptForOllamaHost),
@@ -229,6 +269,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             informativeText: "例: gpt-4o-mini, gpt-4o, gpt-5",
             current: ProviderType.chatGPTModel
         ) { ProviderType.chatGPTModel = $0 }
+    }
+
+    @objc private func selectGeminiModel(_ sender: NSMenuItem) {
+        guard let model = sender.representedObject as? String else { return }
+        ProviderType.geminiModel = model
+        updateMenu()
+    }
+
+    @objc private func promptForGeminiModel() {
+        promptForStringSetting(
+            messageText: "Gemini モデルを設定",
+            informativeText: "例: gemini-3.5-flash, gemini-2.5-flash-lite, gemini-2.5-pro",
+            current: ProviderType.geminiModel
+        ) { ProviderType.geminiModel = $0 }
     }
 
     @objc private func promptForOllamaHost() {

@@ -1,12 +1,14 @@
 import Foundation
 
-// Gemini API client — gemini-2.5-flash-lite (free tier: 30 RPM, 1000 RPD)
+// Gemini API client — default to Flash-Lite for high-volume command routing.
+// The actual model is resolved per-request from `ProviderType.geminiModel`
+// so the status-bar menu can swap it without restarting the app.
 struct GeminiClient {
     let apiKey: String
-    static let model = "gemini-2.5-flash-lite"
 
     private var endpoint: URL {
-        URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(Self.model):generateContent?key=\(apiKey)")!
+        let model = ProviderType.geminiModel
+        return URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(apiKey)")!
     }
 
     struct Response: Decodable {
@@ -45,6 +47,13 @@ struct GeminiClient {
         struct Part: Decodable {
             let text: String?
             let functionCall: FunctionCall?
+            let thoughtSignature: String?
+
+            enum CodingKeys: String, CodingKey {
+                case text
+                case functionCall
+                case thoughtSignature
+            }
 
             struct FunctionCall: Decodable {
                 let name: String
@@ -62,6 +71,14 @@ struct GeminiClient {
             "contents": contents,
             "tools": tools,
             "system_instruction": ["parts": [["text": systemInstruction]]],
+            "generationConfig": [
+                "maxOutputTokens": 512,
+                "temperature": 0.1,
+                "topP": 0.9,
+                "thinkingConfig": [
+                    "thinkingLevel": "minimal",
+                ],
+            ] as [String: Any],
         ]
 
         var req = URLRequest(url: endpoint)

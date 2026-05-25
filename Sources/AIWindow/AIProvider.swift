@@ -65,6 +65,26 @@ enum ProviderType: String, CaseIterable {
         set { UserDefaults.standard.set(newValue, forKey: chatGPTModelKey) }
     }
 
+    // MARK: - Gemini settings
+
+    private static let geminiModelKey = "AIWindow.GeminiModel"
+    static var geminiModel: String {
+        get { UserDefaults.standard.string(forKey: geminiModelKey) ?? "gemini-3.1-flash-lite" }
+        set { UserDefaults.standard.set(newValue, forKey: geminiModelKey) }
+    }
+
+    /// Preset list shown in the status-bar submenu. Ordered roughly from
+    /// cheapest/fastest to most capable. "その他..." lets the user enter any
+    /// other Gemini model name as free text.
+    static let geminiModelPresets: [String] = [
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
+        "gemini-3.5-flash",
+        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
+    ]
+
     static let defaultsKey = "AIWindowSelectedProvider"
 }
 
